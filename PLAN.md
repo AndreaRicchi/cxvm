@@ -5,7 +5,7 @@
 
 ## Status
 
-- [ ] M0 — Skeleton & CI
+- [x] M0 — Skeleton & CI
 - [ ] M1 — Config, IDs & resolution
 - [ ] M2 — Project activation (first useful version)
 - [ ] M3 — Clang prebuilt backend
@@ -18,6 +18,15 @@
 ### Decisions log
 
 _(Append dated one-line entries: what was decided and why.)_
+
+- 2026-09-28: License is dual `MIT OR Apache-2.0` (Rust ecosystem convention).
+- 2026-09-28: Edition 2024, MSRV 1.89 (`std::fs::File::lock` needs it); CI runs on `stable`.
+- 2026-09-28: Stubbed commands exit 1 with `not implemented yet (planned for M<n>)` on stderr, so scripts cannot mistake a stub for success.
+- 2026-09-28: `completions` is implemented in M0 (free with `clap_complete`) rather than stubbed.
+- 2026-09-28: Dependencies are added in the milestone that uses them, not all of §6 up front; M0 has only `clap`, `clap_complete` and the test crates.
+- 2026-09-28: M0 stubs the §5 table only; `prune` and `catalog update` (M7) are added when M7 starts.
+- 2026-09-28: CI installs `musl-tools` from the start so the musl job does not change when C dependencies (rustls/ring, liblzma) arrive in M3.
+- 2026-09-28: §7 "small, focused commits" is standing authorisation to commit per logical step during a milestone; nothing is ever pushed by Claude.
 
 ---
 
