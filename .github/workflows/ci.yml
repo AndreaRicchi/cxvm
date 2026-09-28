@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  check:
+    name: fmt, clippy, test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+
+  release-musl:
+    name: static musl build
+    runs-on: ubuntu-latest
+    env:
+      TARGET: x86_64-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@v4
+      # Needed once C dependencies (rustls/ring, liblzma) arrive; harmless now.
+      - run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --target "$TARGET"
+      - name: Check the binary is static and runs
+        run: |
+          bin="target/$TARGET/release/cxvm"
+          file "$bin"
+          file "$bin" | grep -q 'static' || { echo "::error::cxvm is not statically linked"; exit 1; }
+          "$bin" --version
+          "$bin" --help
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cxvm-x86_64-unknown-linux-musl
+          path: target/x86_64-unknown-linux-musl/release/cxvm
+          if-no-files-found: error
