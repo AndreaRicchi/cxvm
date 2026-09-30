@@ -47,6 +47,18 @@ impl ProjectRc {
 const FIX_HINT: &str = "the file must contain `compiler = \"<id>\"`, e.g. \
                         `compiler = \"gcc@13.3.0\"`; fix it or run `cxvm use <id>`";
 
+/// Writes `compiler = "<spec>"` to the `.cxvmrc` at `path`, replacing its content.
+pub fn write_rc(path: &Path, spec: &Spec) -> Result<()> {
+    files::write_atomic(path, &format!("compiler = \"{spec}\"\n"))
+}
+
+/// The project root for `cwd`: the directory of the nearest `.cxvmrc`, or `cwd` itself.
+pub fn project_root(cwd: &Path) -> PathBuf {
+    find_rc(cwd)
+        .and_then(|rc| rc.parent().map(Path::to_path_buf))
+        .unwrap_or_else(|| cwd.to_owned())
+}
+
 /// The nearest `.cxvmrc` in `start` or one of its ancestors.
 ///
 /// Anything named `.cxvmrc` counts, even a directory or a dangling symlink, so that a broken pin
@@ -298,6 +310,30 @@ mod tests {
     fn find_rc_returns_none_without_a_pin() {
         let f = fixture();
         assert_eq!(find_rc(&f.root.join("a/b/c")), None);
+    }
+
+    #[test]
+    fn written_pins_read_back() {
+        let f = fixture();
+        let rc = f.root.join(RC_FILE);
+        for id in ["gcc@13.3.0", "clang@18.1.8-local", "system"] {
+            write_rc(&rc, &spec(id)).unwrap();
+            assert_eq!(
+                fs::read_to_string(&rc).unwrap(),
+                format!("compiler = \"{id}\"\n")
+            );
+            assert_eq!(ProjectRc::load(&rc).unwrap().compiler, spec(id));
+        }
+    }
+
+    #[test]
+    fn project_root_is_the_nearest_pin_or_the_cwd() {
+        let f = fixture();
+        assert_eq!(project_root(&f.root.join("a/b")), f.root.join("a/b"));
+        f.pin("", "compiler = \"gcc@13.3.0\"\n");
+        assert_eq!(project_root(&f.root.join("a/b")), f.root);
+        f.pin("a", "compiler = \"gcc@13.3.0\"\n");
+        assert_eq!(project_root(&f.root.join("a/b")), f.root.join("a"));
     }
 
     #[test]

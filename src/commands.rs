@@ -10,6 +10,7 @@ use crate::config::Config;
 use crate::detect;
 use crate::error::{Error, Result};
 use crate::files;
+use crate::integrations::{self, Activation, Gitignore};
 use crate::paths::Paths;
 use crate::project::{self, Resolution, Source};
 use crate::store::{Installed, Link, Store};
@@ -220,38 +221,177 @@ pub fn current(ctx: &Context, json: bool) -> Result<()> {
     if installed {
         Ok(())
     } else {
-        Err(not_installed_error(&store, &spec, &source)?)
+        Err(not_installed_error(&store, &spec, format!(" ({source})"))?)
     }
 }
 
 /// The error for a toolchain spec with no match in the store, with the next step to take.
-fn not_installed_error(store: &Store, spec: &Spec, source: &Source) -> Result<Error> {
+/// `context` follows "is not installed", e.g. ` (set by /p/.cxvmrc)`.
+fn not_installed_error(store: &Store, spec: &Spec, context: String) -> Result<Error> {
     let mut hint = match spec {
         Spec::Toolchain { kind, version } if version.suffix().is_some() => format!(
             "register it with `cxvm link <prefix> --as {kind}@<x.y.z>-{}`",
             version.suffix().unwrap_or_default()
         ),
-        _ => format!("run `cxvm install {spec}`"),
+        _ => format!(
+            "run `cxvm install {spec}`, or register an existing install with \
+             `cxvm link <prefix>`"
+        ),
     };
-    if let Spec::Toolchain { kind, .. } = spec {
-        let same_kind: Vec<String> = store
+    if let Spec::Toolchain { kind, version } = spec {
+        let same_kind: Vec<ToolchainId> = store
             .installed()?
             .into_iter()
             .filter(|t| t.id.kind() == *kind)
-            .map(|t| t.id.to_string())
+            .map(|t| t.id)
             .collect();
+        // A linked toolchain that only its suffix keeps from matching.
+        if version.suffix().is_none()
+            && let Some(suffix) = same_kind.iter().rev().find_map(|id| {
+                let suffix = id.version().suffix()?;
+                let with_suffix: Spec = format!("{spec}-{suffix}").parse().ok()?;
+                with_suffix.select([id]).map(|_| suffix)
+            })
+        {
+            hint = format!(
+                "linked toolchains are selected with their suffix: `{spec}-{suffix}`; or {hint}"
+            );
+        }
+        let same_kind: Vec<String> = same_kind.iter().map(ToString::to_string).collect();
         if !same_kind.is_empty() {
-            hint.push_str(&format!(
-                ", or pin an installed version: {}",
-                same_kind.join(", ")
-            ));
+            hint.push_str(&format!("; installed: {}", same_kind.join(", ")));
         }
     }
     Ok(Error::NotInstalled {
         spec: spec.to_string(),
-        reason: source.to_string(),
+        context,
         hint,
     })
+}
+
+/// A resolved, usable toolchain: `system` or an installed or linked one.
+#[derive(Debug, Clone)]
+enum Target {
+    System,
+    Toolchain(Installed),
+}
+
+impl Target {
+    /// The installed toolchain `spec` selects. `context` goes into the not-installed error.
+    fn find(store: &Store, spec: &Spec, context: String) -> Result<Self> {
+        match spec {
+            Spec::System => Ok(Target::System),
+            Spec::Toolchain { .. } => match store.find(spec)? {
+                Some(toolchain) => Ok(Target::Toolchain(toolchain)),
+                None => Err(not_installed_error(store, spec, context)?),
+            },
+        }
+    }
+
+    /// The exact spec to record in `.cxvmrc` or `config.toml`.
+    fn spec(&self) -> Spec {
+        match self {
+            Target::System => Spec::System,
+            Target::Toolchain(toolchain) => Spec::from(toolchain.id.clone()),
+        }
+    }
+
+    /// What `.cxvm/current` points at.
+    fn prefix(&self) -> Option<&Path> {
+        match self {
+            Target::System => None,
+            Target::Toolchain(toolchain) => Some(&toolchain.path),
+        }
+    }
+
+    fn activation(&self, ctx: &Context) -> Result<Activation> {
+        match self {
+            Target::System => Ok(Activation::for_system(
+                ctx.path_var.as_deref(),
+                ctx.paths.data_dir(),
+            )),
+            Target::Toolchain(toolchain) => Activation::for_toolchain(toolchain),
+        }
+    }
+}
+
+/// Regenerates `<root>/.cxvm/` for `target` and makes sure git ignores it.
+fn generate_project(ctx: &Context, root: &Path, target: &Target) -> Result<()> {
+    let activation = target.activation(ctx)?;
+    integrations::write_project_dir(root, &activation, target.prefix())?;
+    println!(
+        "Generated {} (toolchain.cmake, env{})",
+        root.join(integrations::PROJECT_DIR).display(),
+        if target.prefix().is_some() {
+            ", current"
+        } else {
+            ""
+        }
+    );
+    if let Gitignore::Added(path) = integrations::ensure_gitignored(root)? {
+        println!("Added {}/ to {}", integrations::PROJECT_DIR, path.display());
+    }
+    Ok(())
+}
+
+/// `cxvm use`: pin `id` in the current project and regenerate `.cxvm/`.
+pub fn use_(ctx: &Context, id: &str) -> Result<()> {
+    let spec: Spec = id.parse()?;
+    let target = Target::find(&ctx.store(), &spec, String::new())?;
+    // Fail on an incomplete toolchain before touching any file.
+    target.activation(ctx)?;
+
+    let root = project::project_root(&ctx.cwd);
+    let rc = root.join(project::RC_FILE);
+    let exact = target.spec();
+    project::write_rc(&rc, &exact)?;
+    if exact == spec {
+        println!("Pinned {exact} in {}", rc.display());
+    } else {
+        println!("Pinned {exact} (from {spec}) in {}", rc.display());
+    }
+    generate_project(ctx, &root, &target)?;
+
+    let build = format!("build/{}", exact.to_string().replace('@', "-"));
+    let toolchain_file = format!("{}/toolchain.cmake", integrations::PROJECT_DIR);
+    println!("Configure a build with:");
+    if root == ctx.cwd {
+        println!("  cmake -S . -B {build} -DCMAKE_TOOLCHAIN_FILE={toolchain_file}");
+    } else {
+        let root = root.display();
+        println!(
+            "  cmake -S {root} -B {root}/{build} -DCMAKE_TOOLCHAIN_FILE={root}/{toolchain_file}"
+        );
+    }
+    if let Some(value) = ctx.env_compiler.as_deref().filter(|v| !v.is_empty()) {
+        eprintln!(
+            "note: {}={value} overrides this pin in this shell",
+            project::ENV_VAR
+        );
+    }
+    Ok(())
+}
+
+/// `cxvm install` without an id: make sure the project's pinned toolchain is present and
+/// regenerate `.cxvm/`. Downloading arrives in M3.
+pub fn install_pinned(ctx: &Context) -> Result<()> {
+    let Some(rc) = project::find_rc(&ctx.cwd) else {
+        return Err(Error::Usage {
+            message: format!(
+                "no {} in {} or its parents",
+                project::RC_FILE,
+                ctx.cwd.display()
+            ),
+            hint: "pin a toolchain with `cxvm use <id>`, or install one with `cxvm install <id>`"
+                .into(),
+        });
+    };
+    let spec = project::ProjectRc::load(&rc)?.compiler;
+    let context = format!(" (set by {})", rc.display());
+    let target = Target::find(&ctx.store(), &spec, context)?;
+    let root = rc.parent().unwrap_or(&ctx.cwd).to_owned();
+    println!("{} is available", target.spec());
+    generate_project(ctx, &root, &target)
 }
 
 /// `cxvm link`: register the toolchain in `prefix` under a detected `-local` id, or `as_id`.

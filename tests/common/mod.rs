@@ -14,7 +14,8 @@ pub struct Sandbox {
 }
 
 impl Sandbox {
-    /// Empty store, a project tree `proj/a/b/c`, and a `bin/` on `PATH` holding a fake `cc`.
+    /// Empty store, a project tree `proj/a/b/c`, and a `bin/` on `PATH` holding a fake `cc`
+    /// and `c++`.
     pub fn new() -> Self {
         let sandbox = Self {
             dir: tempfile::tempdir().expect("temp dir"),
@@ -22,6 +23,7 @@ impl Sandbox {
         fs::create_dir_all(sandbox.project().join("a/b/c")).unwrap();
         fs::create_dir_all(sandbox.path("home")).unwrap();
         sandbox.fake_compiler(&sandbox.bin(), "cc");
+        sandbox.fake_compiler(&sandbox.bin(), "c++");
         sandbox
     }
 

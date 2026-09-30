@@ -37,11 +37,11 @@ pub enum Error {
     InvalidEnvCompiler { input: String, reason: String },
 
     /// The active toolchain is not in the store.
-    #[error("{spec} is not installed ({reason})\n  hint: {hint}")]
+    #[error("{spec} is not installed{context}\n  hint: {hint}")]
     NotInstalled {
         spec: String,
-        /// Where the pin came from, e.g. `set by /p/.cxvmrc`.
-        reason: String,
+        /// Where the pin came from, e.g. ` (set by /p/.cxvmrc)`, or empty.
+        context: String,
         hint: String,
     },
 

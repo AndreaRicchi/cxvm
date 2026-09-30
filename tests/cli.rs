@@ -63,11 +63,9 @@ fn version_flag_works() {
 #[test]
 fn stubs_fail_with_not_implemented() {
     let invocations: &[&[&str]] = &[
-        &["install"],
         &["install", "gcc@13", "--from-source"],
         &["remove", "gcc@13.3.0", "--force"],
         &["list", "--available", "--json"],
-        &["use", "gcc@13"],
         &["global", "clang@18"],
         &["exec", "--", "make", "-j4"],
         &["env"],
