@@ -105,9 +105,10 @@ fn json_lists_every_toolchain_with_flags() {
     assert_eq!(
         json,
         serde_json::json!([
-            {"id": "gcc@13.3.0", "path": gcc, "active": true, "global": false},
+            {"id": "gcc@13.3.0", "path": gcc, "active": true, "global": false,
+             "linked": false},
             {"id": "clang@18.1.8", "path": s.store().join("toolchains/clang/18.1.8"),
-             "active": false, "global": true},
+             "active": false, "global": true, "linked": false},
         ])
     );
 }
@@ -131,4 +132,31 @@ fn invalid_pin_is_an_error_naming_the_file() {
         .assert()
         .code(1)
         .stderr(predicate::str::contains(rc.display().to_string()));
+}
+
+#[test]
+fn linked_toolchains_are_listed_and_marked() {
+    let s = Sandbox::new();
+    s.install("gcc", "13.3.0");
+    let prefix = s.path("opt/gcc-11");
+    common::fake_toolchain(&prefix, "gcc", "11.4.0");
+    std::fs::write(
+        s.store().join("links.toml"),
+        format!(
+            "[[toolchain]]\nid = \"gcc@11.4.0-local\"\nprefix = \"{p}\"\n\
+             cc = \"{p}/bin/gcc\"\ncxx = \"{p}/bin/g++\"\nversion = \"gcc 11.4.0\"\n",
+            p = prefix.display()
+        ),
+    )
+    .unwrap();
+    s.pin("", "gcc@11.4.0-local");
+    s.cxvm("")
+        .arg("list")
+        .assert()
+        .success()
+        .stdout("* gcc@11.4.0-local  active, linked\n  gcc@13.3.0\n");
+    let out = s.cxvm("").args(["list", "--json"]).output().unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json[0]["path"], serde_json::json!(prefix));
+    assert_eq!(json[0]["linked"], serde_json::json!(true));
 }

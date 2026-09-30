@@ -71,6 +71,7 @@ struct ListEntry {
     path: String,
     active: bool,
     global: bool,
+    linked: bool,
 }
 
 /// `cxvm list`: installed toolchains, marking the active one and the global default.
@@ -90,6 +91,7 @@ pub fn list(ctx: &Context, json: bool) -> Result<()> {
             path: t.path.display().to_string(),
             active: active == Some(&t.id),
             global: global == Some(&t.id),
+            linked: t.linked,
         })
         .collect();
 
@@ -110,10 +112,14 @@ pub fn list(ctx: &Context, json: bool) -> Result<()> {
     let width = entries.iter().map(|e| e.id.len()).max().unwrap_or(0);
     for entry in &entries {
         let marker = if entry.active { '*' } else { ' ' };
-        let flags: Vec<&str> = [(entry.active, "active"), (entry.global, "global")]
-            .into_iter()
-            .filter_map(|(set, name)| set.then_some(name))
-            .collect();
+        let flags: Vec<&str> = [
+            (entry.active, "active"),
+            (entry.global, "global"),
+            (entry.linked, "linked"),
+        ]
+        .into_iter()
+        .filter_map(|(set, name)| set.then_some(name))
+        .collect();
         let line = format!("{marker} {:<width$}  {}", entry.id, flags.join(", "));
         println!("{}", line.trim_end());
     }
@@ -174,7 +180,7 @@ pub fn current(ctx: &Context, json: bool) -> Result<()> {
             (Some("system".to_owned()), cc, true)
         }
         Spec::Toolchain { .. } => match store.find(&spec)? {
-            Some(Installed { id, path }) => (Some(id.to_string()), Some(path), true),
+            Some(Installed { id, path, .. }) => (Some(id.to_string()), Some(path), true),
             None => (None, None, false),
         },
     };

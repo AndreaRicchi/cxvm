@@ -4,16 +4,54 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
+
+use crate::detect;
 use crate::error::{Error, Result};
+use crate::files;
 use crate::paths::Paths;
 use crate::toolchain::{Kind, Spec, ToolchainId, Version};
 
-/// A toolchain present in the store.
+/// A toolchain cxvm can use: installed in the store or registered with `cxvm link`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Installed {
     pub id: ToolchainId,
-    /// Its prefix, `toolchains/<kind>/<version>`.
+    /// Its prefix: `toolchains/<kind>/<version>` in the store, or the linked directory.
     pub path: PathBuf,
+    /// C driver, e.g. `<prefix>/bin/gcc`.
+    pub cc: PathBuf,
+    /// C++ driver, e.g. `<prefix>/bin/g++`.
+    pub cxx: PathBuf,
+    /// Registered with `cxvm link` rather than installed in the store.
+    pub linked: bool,
+}
+
+/// A toolchain registered with `cxvm link`, as recorded in `links.toml`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Link {
+    pub id: ToolchainId,
+    pub prefix: PathBuf,
+    pub cc: PathBuf,
+    pub cxx: PathBuf,
+    /// First line of `cc --version` when it was linked.
+    pub version: String,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct RawLinks {
+    #[serde(default, rename = "toolchain", skip_serializing_if = "Vec::is_empty")]
+    toolchains: Vec<RawLink>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct RawLink {
+    id: String,
+    prefix: PathBuf,
+    cc: PathBuf,
+    cxx: PathBuf,
+    version: String,
 }
 
 /// Read access to the toolchains in the store.
@@ -31,11 +69,85 @@ impl Store {
         &self.paths
     }
 
-    /// Every toolchain in `toolchains/<kind>/<version>/`, sorted by kind then version.
+    /// Every toolchain in the store and in `links.toml`, sorted by kind then version.
     ///
-    /// Entries that are not directories or whose names are not exact versions are skipped;
-    /// `cxvm doctor` reports them (M7).
+    /// Store entries that are not directories or whose names are not exact versions are
+    /// skipped, and so is a link whose id a store entry already uses; `cxvm doctor` reports
+    /// them (M7).
     pub fn installed(&self) -> Result<Vec<Installed>> {
+        let mut installed = self.store_entries()?;
+        for link in self.links()? {
+            if installed.iter().any(|t| t.id == link.id) {
+                continue;
+            }
+            installed.push(Installed {
+                id: link.id,
+                path: link.prefix,
+                cc: link.cc,
+                cxx: link.cxx,
+                linked: true,
+            });
+        }
+        installed.sort_by(|a, b| a.id.cmp(&b.id));
+        Ok(installed)
+    }
+
+    /// The toolchains registered in `links.toml`.
+    pub fn links(&self) -> Result<Vec<Link>> {
+        let path = self.paths.links_file();
+        let raw: RawLinks = files::read_toml(&path, LINKS_HINT)?.unwrap_or_default();
+        let invalid = |message: String| Error::InvalidFile {
+            path: path.clone(),
+            message,
+            hint: LINKS_HINT.into(),
+        };
+        let mut links: Vec<Link> = Vec::with_capacity(raw.toolchains.len());
+        for entry in raw.toolchains {
+            let id: ToolchainId = entry.id.parse().map_err(|err| match err {
+                Error::InvalidId { input, reason } => {
+                    invalid(format!("invalid toolchain id `{input}`: {reason}"))
+                }
+                other => other,
+            })?;
+            if links.iter().any(|link| link.id == id) {
+                return Err(invalid(format!("`{id}` is listed twice")));
+            }
+            links.push(Link {
+                id,
+                prefix: entry.prefix,
+                cc: entry.cc,
+                cxx: entry.cxx,
+                version: entry.version,
+            });
+        }
+        Ok(links)
+    }
+
+    /// Replaces `links.toml` with `links`, sorted by id.
+    pub fn save_links(&self, links: &[Link]) -> Result<()> {
+        let mut sorted: Vec<&Link> = links.iter().collect();
+        sorted.sort_by(|a, b| a.id.cmp(&b.id));
+        let toolchains: Vec<RawLink> = sorted
+            .into_iter()
+            .map(|link| RawLink {
+                id: link.id.to_string(),
+                prefix: link.prefix.clone(),
+                cc: link.cc.clone(),
+                cxx: link.cxx.clone(),
+                version: link.version.clone(),
+            })
+            .collect();
+        let path = self.paths.links_file();
+        let body = toml::to_string(&RawLinks { toolchains }).map_err(|err| Error::InvalidFile {
+            path: path.clone(),
+            message: format!("cannot encode the links: {err}"),
+            hint: "link only prefixes whose paths are valid UTF-8".into(),
+        })?;
+        files::write_atomic(&path, &format!("{LINKS_HEADER}{body}"))
+    }
+
+    /// Toolchains in `toolchains/<kind>/<version>/`.
+    fn store_entries(&self) -> Result<Vec<Installed>> {
         let mut installed = Vec::new();
         for kind in Kind::ALL {
             let kind_dir = self.paths.toolchains_dir().join(kind.as_str());
@@ -49,11 +161,17 @@ impl Store {
                 if let Some(id) = id
                     && path.is_dir()
                 {
-                    installed.push(Installed { id, path });
+                    let (cc, cxx) = detect::compilers(&path, kind);
+                    installed.push(Installed {
+                        id,
+                        path,
+                        cc,
+                        cxx,
+                        linked: false,
+                    });
                 }
             }
         }
-        installed.sort_by(|a, b| a.id.cmp(&b.id));
         Ok(installed)
     }
 
@@ -66,6 +184,12 @@ impl Store {
         Ok(installed.iter().find(|t| &t.id == id).cloned())
     }
 }
+
+const LINKS_HEADER: &str =
+    "# Toolchains registered with `cxvm link`. Change them with `cxvm link` / `cxvm unlink`.\n";
+
+const LINKS_HINT: &str = "fix the entry, or delete the file and register the toolchains again \
+                          with `cxvm link <prefix>`";
 
 /// The entries of `dir`; none if it is missing or not a directory.
 fn read_dir(dir: &Path) -> Result<Vec<fs::DirEntry>> {
@@ -113,6 +237,115 @@ mod tests {
 
     fn ids(installed: &[Installed]) -> Vec<String> {
         installed.iter().map(|t| t.id.to_string()).collect()
+    }
+
+    fn link(id: &str, prefix: &str) -> Link {
+        Link {
+            id: id.parse().unwrap(),
+            prefix: prefix.into(),
+            cc: format!("{prefix}/bin/cc").into(),
+            cxx: format!("{prefix}/bin/c++").into(),
+            version: format!("{id} (fake)"),
+        }
+    }
+
+    #[test]
+    fn no_links_file_means_no_links() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(store(dir.path()).links().unwrap().is_empty());
+    }
+
+    #[test]
+    fn links_round_trip_sorted_by_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = store(dir.path());
+        let clang = link("clang@18.1.8-local", "/opt/llvm-18");
+        let gcc = link("gcc@11.4.0-local", "/opt/gcc-11");
+        s.save_links(&[clang.clone(), gcc.clone()]).unwrap();
+        assert_eq!(s.links().unwrap(), [gcc, clang]);
+        let text = fs::read_to_string(s.paths().links_file()).unwrap();
+        assert!(text.contains("[[toolchain]]"), "{text}");
+        assert!(text.contains("prefix = \"/opt/gcc-11\""), "{text}");
+    }
+
+    #[test]
+    fn saving_no_links_leaves_a_valid_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = store(dir.path());
+        s.save_links(&[link("gcc@11.4.0-local", "/opt/gcc-11")])
+            .unwrap();
+        s.save_links(&[]).unwrap();
+        assert!(s.links().unwrap().is_empty());
+    }
+
+    #[test]
+    fn invalid_links_file_is_an_error_naming_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = store(dir.path());
+        let path = s.paths().links_file();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        for content in [
+            "[[toolchain]]\nid = \"gcc@11\"\nprefix = \"/x\"\ncc = \"/x/gcc\"\ncxx = \"/x/g++\"\nversion = \"\"\n",
+            "[[toolchain]]\nid = \"gcc@11.4.0-local\"\n",
+            "toolchains = 1\n",
+        ] {
+            fs::write(&path, content).unwrap();
+            let err = s.links().unwrap_err().to_string();
+            assert!(
+                err.contains(&path.display().to_string()),
+                "{content}: {err}"
+            );
+            assert!(err.contains("hint:"), "{content}: {err}");
+        }
+    }
+
+    #[test]
+    fn installed_merges_store_and_links() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = store(dir.path());
+        let gcc13 = add(&s, "gcc/13.3.0");
+        add(&s, "clang/18.1.8");
+        let linked = link("gcc@11.4.0-local", "/opt/gcc-11");
+        s.save_links(std::slice::from_ref(&linked)).unwrap();
+        let installed = s.installed().unwrap();
+        assert_eq!(
+            ids(&installed),
+            ["gcc@11.4.0-local", "gcc@13.3.0", "clang@18.1.8"]
+        );
+        assert_eq!(
+            installed[0],
+            Installed {
+                id: linked.id,
+                path: linked.prefix,
+                cc: linked.cc,
+                cxx: linked.cxx,
+                linked: true,
+            }
+        );
+        assert_eq!(
+            installed[1],
+            Installed {
+                id: "gcc@13.3.0".parse().unwrap(),
+                cc: gcc13.join("bin/gcc"),
+                cxx: gcc13.join("bin/g++"),
+                path: gcc13,
+                linked: false,
+            }
+        );
+        assert_eq!(installed[2].cxx, installed[2].path.join("bin/clang++"));
+    }
+
+    #[test]
+    fn store_entry_wins_over_a_link_with_the_same_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = store(dir.path());
+        let in_store = add(&s, "gcc/11.4.0-local");
+        s.save_links(&[link("gcc@11.4.0-local", "/opt/gcc-11")])
+            .unwrap();
+        let installed = s.installed().unwrap();
+        assert_eq!(installed.len(), 1);
+        assert_eq!(installed[0].path, in_store);
+        assert!(!installed[0].linked);
     }
 
     #[test]
