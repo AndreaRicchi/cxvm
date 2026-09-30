@@ -11,6 +11,7 @@ use clap_complete::Shell;
 
 use crate::commands::{self, Context};
 use crate::error::{Error, Result};
+use crate::integrations;
 
 /// Per-project C/C++ compiler versions for x86_64 Linux.
 #[derive(Debug, Parser)]
@@ -135,8 +136,14 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Remove { .. } => ("remove", "M3"),
         Command::Use { id } => return commands::use_(&Context::from_process_env()?, &id),
         Command::Global { id } => return commands::global(&Context::from_process_env()?, &id),
-        Command::Exec { .. } => ("exec", "M2"),
-        Command::Env { .. } => ("env", "M2"),
+        Command::Exec { cmd } => return commands::exec(&Context::from_process_env()?, &cmd),
+        Command::Env { shell } => {
+            let shell = shell.map(|shell| match shell {
+                EnvShell::Bash | EnvShell::Zsh => integrations::Shell::Posix,
+                EnvShell::Fish => integrations::Shell::Fish,
+            });
+            return commands::env(&Context::from_process_env()?, shell);
+        }
         Command::Link { prefix, as_id } => {
             return commands::link(&Context::from_process_env()?, &prefix, as_id.as_deref());
         }

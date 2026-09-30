@@ -10,7 +10,7 @@ use crate::config::Config;
 use crate::detect;
 use crate::error::{Error, Result};
 use crate::files;
-use crate::integrations::{self, Activation, Gitignore};
+use crate::integrations::{self, Activation, Gitignore, Shell};
 use crate::paths::Paths;
 use crate::project::{self, Resolution, Source};
 use crate::store::{Installed, Link, Store};
@@ -25,6 +25,8 @@ pub struct Context {
     pub env_compiler: Option<String>,
     /// Value of `PATH`, to find the `system` compiler.
     pub path_var: Option<OsString>,
+    /// Value of `SHELL`, the default syntax for `cxvm env`.
+    pub shell: Option<OsString>,
 }
 
 impl Context {
@@ -51,6 +53,7 @@ impl Context {
             cwd,
             env_compiler,
             path_var: std::env::var_os("PATH"),
+            shell: std::env::var_os("SHELL"),
         })
     }
 
@@ -618,4 +621,59 @@ pub fn global(ctx: &Context, id: &str) -> Result<()> {
         eprintln!("note: here the toolchain is {source}, which overrides the global default");
     }
     Ok(())
+}
+
+/// The activation of the toolchain that is active here; fails if it is not installed.
+fn active(ctx: &Context) -> Result<Activation> {
+    let Resolution { spec, source } = ctx.resolve()?;
+    Target::find(&ctx.store(), &spec, format!(" ({source})"))?.activation(ctx)
+}
+
+/// `cxvm env`: print exports for `eval`. `shell` defaults to the one in `$SHELL`.
+pub fn env(ctx: &Context, shell: Option<Shell>) -> Result<()> {
+    let shell = shell.unwrap_or_else(|| {
+        let login = ctx
+            .shell
+            .as_deref()
+            .map(Path::new)
+            .and_then(Path::file_name);
+        if login.is_some_and(|name| name == "fish") {
+            Shell::Fish
+        } else {
+            Shell::Posix
+        }
+    });
+    let activation = active(ctx)?;
+    print!("{}", integrations::render_env(&activation, shell));
+    Ok(())
+}
+
+/// `cxvm exec`: replace this process with `cmd`, run with the active toolchain's environment.
+/// Only returns on failure.
+pub fn exec(ctx: &Context, cmd: &[String]) -> Result<()> {
+    use std::os::unix::process::CommandExt;
+
+    let (program, args) = cmd.split_first().expect("clap requires a command");
+    let activation = active(ctx)?;
+    let mut command = std::process::Command::new(program);
+    command.args(args).env("CXVM_TOOLCHAIN", &activation.label);
+    if let Some(bin) = &activation.bin {
+        let dirs =
+            std::iter::once(bin.clone()).chain(ctx.path_var.iter().flat_map(std::env::split_paths));
+        let path = std::env::join_paths(dirs).map_err(|err| Error::Usage {
+            message: format!("cannot add {} to PATH: {err}", bin.display()),
+            hint: "toolchain paths must not contain `:`".into(),
+        })?;
+        command.env("PATH", path);
+    }
+    for (name, path) in [("CC", &activation.cc), ("CXX", &activation.cxx)] {
+        if let Some(path) = path {
+            command.env(name, path);
+        }
+    }
+    let err = files::retry_busy(|| Err::<(), _>(command.exec())).unwrap_err();
+    Err(Error::Usage {
+        message: format!("cannot run `{program}`: {err}"),
+        hint: "check the command name; the toolchain's bin directory is searched first".into(),
+    })
 }
