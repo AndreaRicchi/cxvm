@@ -7,8 +7,11 @@ pub mod backends;
 pub mod cli;
 pub mod config;
 pub mod doctor;
+pub mod error;
 pub mod integrations;
 pub mod paths;
 pub mod project;
 pub mod store;
 pub mod toolchain;
+
+pub use error::{Error, Result};

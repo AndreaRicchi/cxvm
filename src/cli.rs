@@ -1,14 +1,15 @@
 //! Command-line surface: argument parsing with clap and dispatch to the library.
 //!
 //! The command set mirrors PLAN.md §5. Until a milestone implements a command, it returns
-//! [`NotImplemented`] so that scripts never mistake a stub for success.
+//! [`Error::NotImplemented`] so that scripts never mistake a stub for success.
 
-use std::fmt;
 use std::io;
 use std::path::PathBuf;
 
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::Shell;
+
+use crate::error::{Error, Result};
 
 /// Per-project C/C++ compiler versions for x86_64 Linux.
 #[derive(Debug, Parser)]
@@ -113,29 +114,8 @@ pub enum EnvShell {
     Fish,
 }
 
-/// Error returned by commands whose milestone has not been reached yet.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NotImplemented {
-    /// Subcommand name as typed by the user.
-    pub command: &'static str,
-    /// Milestone from PLAN.md §8 that implements it.
-    pub milestone: &'static str,
-}
-
-impl fmt::Display for NotImplemented {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "`cxvm {}` is not implemented yet: it is planned for milestone {} (see PLAN.md)",
-            self.command, self.milestone
-        )
-    }
-}
-
-impl std::error::Error for NotImplemented {}
-
 /// Run the parsed command line.
-pub fn run(cli: Cli) -> Result<(), NotImplemented> {
+pub fn run(cli: Cli) -> Result<()> {
     let (command, milestone) = match cli.command {
         Command::Completions { shell } => {
             clap_complete::generate(shell, &mut Cli::command(), "cxvm", &mut io::stdout());
@@ -153,7 +133,7 @@ pub fn run(cli: Cli) -> Result<(), NotImplemented> {
         Command::Unlink { .. } => ("unlink", "M2"),
         Command::Doctor => ("doctor", "M7"),
     };
-    Err(NotImplemented { command, milestone })
+    Err(Error::NotImplemented { command, milestone })
 }
 
 #[cfg(test)]
