@@ -197,7 +197,7 @@ mod tests {
                  -dumpversion) echo {major} ;;\n\
                  --version) echo '{name} (Fake) {version}'; echo 'Copyright' ;;\n\
                  -print-file-name=*) f=\"${{1#-print-file-name=}}\"; \
-                 d=\"$(dirname \"$0\")/../lib64\"; \
+                 d=\"${{0%/*}}/../lib64\"; \
                  if [ -e \"$d/$f\" ]; then echo \"$d/$f\"; else echo \"$f\"; fi ;;\n\
                  esac\n",
                 major = version.split('.').next().unwrap()

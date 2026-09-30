@@ -97,11 +97,11 @@ pub fn fake_toolchain(prefix: &Path, kind: &str, version: &str) {
                 "#!/bin/sh\ncase \"$1\" in\n\
                  -dumpfullversion) echo {version} ;;\n\
                  -dumpversion) echo {major} ;;\n\
-                 --version) echo \"$(basename \"$0\") (Fake) {version}\" ;;\n\
+                 --version) echo \"${{0##*/}} (Fake) {version}\" ;;\n\
                  -print-file-name=*) f=\"${{1#-print-file-name=}}\"; \
-                 d=\"$(dirname \"$0\")/../lib64\"; \
+                 d=\"${{0%/*}}/../lib64\"; \
                  if [ -e \"$d/$f\" ]; then echo \"$d/$f\"; else echo \"$f\"; fi ;;\n\
-                 *) echo \"$(basename \"$0\") {version} $*\" ;;\n\
+                 *) echo \"${{0##*/}} {version} $*\" ;;\n\
                  esac\n"
             ),
         ),
@@ -111,7 +111,7 @@ pub fn fake_toolchain(prefix: &Path, kind: &str, version: &str) {
                 "#!/bin/sh\ncase \"$1\" in\n\
                  -dumpversion) echo 4.2.1 ;;\n\
                  --version) echo 'clang version {version} (fake)' ;;\n\
-                 *) echo \"$(basename \"$0\") {version} $*\" ;;\n\
+                 *) echo \"${{0##*/}} {version} $*\" ;;\n\
                  esac\n"
             ),
         ),

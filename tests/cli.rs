@@ -1,7 +1,10 @@
 //! End-to-end checks of the CLI surface: every §5 command exists, has help text, and the
 //! stubs fail loudly instead of pretending to succeed.
 
+mod common;
+
 use assert_cmd::Command;
+use common::Sandbox;
 use predicates::prelude::*;
 
 /// Every command from PLAN.md §5, in table order.
@@ -69,12 +72,13 @@ fn stubs_fail_with_not_implemented() {
         &["exec", "--", "make", "-j4"],
         &["env"],
         &["env", "--shell", "fish"],
-        &["link", "/opt/gcc-11", "--as", "gcc@11.4.0-opt"],
-        &["unlink", "gcc@11.4.0-local"],
         &["doctor"],
     ];
+    // In a sandbox: a stub that becomes a real command must never touch the real store.
+    let sandbox = Sandbox::new();
     for args in invocations {
-        cxvm()
+        sandbox
+            .cxvm("")
             .args(*args)
             .assert()
             .code(1)

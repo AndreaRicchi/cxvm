@@ -2,16 +2,18 @@
 //! calls into here with a [`Context`] built from the process environment.
 
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
 use crate::config::Config;
+use crate::detect;
 use crate::error::{Error, Result};
+use crate::files;
 use crate::paths::Paths;
 use crate::project::{self, Resolution, Source};
-use crate::store::{Installed, Store};
-use crate::toolchain::{self, Spec};
+use crate::store::{Installed, Link, Store};
+use crate::toolchain::{self, Kind, Spec, ToolchainId};
 
 /// Everything a command reads from the process environment.
 #[derive(Debug, Clone)]
@@ -250,4 +252,204 @@ fn not_installed_error(store: &Store, spec: &Spec, source: &Source) -> Result<Er
         reason: source.to_string(),
         hint,
     })
+}
+
+/// `cxvm link`: register the toolchain in `prefix` under a detected `-local` id, or `as_id`.
+pub fn link(ctx: &Context, prefix: &Path, as_id: Option<&str>) -> Result<()> {
+    let prefix = files::absolute(&ctx.cwd, prefix);
+    if !prefix.is_dir() {
+        return Err(Error::Usage {
+            message: format!("{} is missing or not a directory", prefix.display()),
+            hint: "pass the install prefix, the directory that contains `bin/`".into(),
+        });
+    }
+    let store = ctx.store();
+    let data_dir = ctx.paths.data_dir();
+    let canonical = |path: &Path| path.canonicalize().unwrap_or_else(|_| path.to_owned());
+    if canonical(&prefix).starts_with(canonical(data_dir)) {
+        return Err(Error::Usage {
+            message: format!("{} is inside the cxvm store", prefix.display()),
+            hint: "toolchains in the store are available already; see `cxvm list`".into(),
+        });
+    }
+
+    let as_id = as_id.map(parse_link_id).transpose()?;
+    let (id, detected) = match &as_id {
+        Some(id) => (id.clone(), probe_as(&prefix, id)?),
+        None => {
+            let detected = probe_any(&prefix)?;
+            let version = format!("{}-local", detected.version)
+                .parse()
+                .expect("an exact version with a suffix parses");
+            let id = ToolchainId::new(detected.kind, version).expect("the version is exact");
+            (id, Some(detected))
+        }
+    };
+    let (cc, cxx) = detect::compilers(&prefix, id.kind());
+    let version_line = detected.map(|d| d.version_line).unwrap_or_default();
+
+    let mut links = store.links()?;
+    if let Some(existing) = links.iter().find(|link| link.id == id) {
+        if existing.prefix == prefix {
+            println!("{id} is already linked to {}", prefix.display());
+            return Ok(());
+        }
+        return Err(Error::Usage {
+            message: format!("{id} is already linked to {}", existing.prefix.display()),
+            hint: format!(
+                "pick another id with `--as {}@{}-<suffix>`, or `cxvm unlink {id}` first",
+                id.kind(),
+                numbers(&id)
+            ),
+        });
+    }
+    if store.installed()?.iter().any(|t| t.id == id && !t.linked) {
+        return Err(Error::Usage {
+            message: format!("{id} is already installed in the cxvm store"),
+            hint: format!(
+                "link it under another id with `--as {}@{}-<suffix>`",
+                id.kind(),
+                numbers(&id)
+            ),
+        });
+    }
+    links.push(Link {
+        id: id.clone(),
+        prefix: prefix.clone(),
+        cc,
+        cxx,
+        version: version_line,
+    });
+    store.save_links(&links)?;
+    println!("Linked {id} -> {}", prefix.display());
+    println!("  pin it with `cxvm use {id}`");
+    Ok(())
+}
+
+/// The numeric part of an exact id's version, e.g. `11.4.0` for `gcc@11.4.0-local`.
+fn numbers(id: &ToolchainId) -> String {
+    let version = id.version().to_string();
+    match id.version().suffix() {
+        Some(suffix) => version[..version.len() - suffix.len() - 1].to_owned(),
+        None => version,
+    }
+}
+
+/// Parses `--as`: an exact id with a suffix, so it cannot collide with store installs.
+fn parse_link_id(input: &str) -> Result<ToolchainId> {
+    let id: ToolchainId = input.parse()?;
+    if id.version().suffix().is_none() {
+        return Err(Error::Usage {
+            message: format!("`--as {id}` has no suffix"),
+            hint: format!(
+                "linked ids need a suffix so they never clash with installed ones, e.g. `{id}-local`"
+            ),
+        });
+    }
+    Ok(id)
+}
+
+/// Detects the only kind of compiler in `prefix`.
+fn probe_any(prefix: &Path) -> Result<detect::Detected> {
+    let kinds = detect::kinds_present(prefix);
+    match kinds.as_slice() {
+        [kind] => detect::probe(prefix, *kind),
+        [] => Err(Error::Detect {
+            prefix: prefix.to_owned(),
+            reason: "it has neither bin/gcc nor bin/clang".into(),
+            hint: "pass the install prefix, the directory that contains `bin/`".into(),
+        }),
+        _ => Err(Error::Detect {
+            prefix: prefix.to_owned(),
+            reason: "it holds both bin/gcc and bin/clang".into(),
+            hint: "say which one to link with `--as gcc@<x.y.z>-<suffix>` or \
+                   `--as clang@<x.y.z>-<suffix>`"
+                .into(),
+        }),
+    }
+}
+
+/// Checks that `prefix` holds the compilers `id` claims. Returns the probe result, or `None`
+/// with a warning when the version cannot be detected and `id` is taken on trust.
+fn probe_as(prefix: &Path, id: &ToolchainId) -> Result<Option<detect::Detected>> {
+    let (cc, cxx) = detect::compilers(prefix, id.kind());
+    for driver in [&cc, &cxx] {
+        if !files::is_executable(driver) {
+            return Err(Error::Detect {
+                prefix: prefix.to_owned(),
+                reason: format!("{} is missing or not executable", driver.display()),
+                hint: match id.kind() {
+                    Kind::Gcc => "a GCC prefix needs bin/gcc and bin/g++",
+                    Kind::Clang => "a Clang prefix needs bin/clang and bin/clang++",
+                }
+                .into(),
+            });
+        }
+    }
+    match detect::probe(prefix, id.kind()) {
+        Ok(detected) => {
+            if detected.version.to_string() != numbers(id) {
+                return Err(Error::Usage {
+                    message: format!(
+                        "`--as {id}` does not match: {} reports version {}",
+                        detected.cc.display(),
+                        detected.version
+                    ),
+                    hint: format!("use `--as {}@{}-<suffix>`", id.kind(), detected.version),
+                });
+            }
+            Ok(Some(detected))
+        }
+        Err(err) => {
+            eprintln!("warning: taking the version from `--as {id}` on trust: {err}");
+            Ok(None)
+        }
+    }
+}
+
+/// `cxvm unlink`: forget a linked toolchain. Its files are left alone.
+pub fn unlink(ctx: &Context, id: &str) -> Result<()> {
+    let id: ToolchainId = id.parse()?;
+    let store = ctx.store();
+    let mut links = store.links()?;
+    let Some(index) = links.iter().position(|link| link.id == id) else {
+        if store.installed()?.iter().any(|t| t.id == id) {
+            return Err(Error::Usage {
+                message: format!("{id} is installed in the cxvm store, not linked"),
+                hint: format!("remove it with `cxvm remove {id}`"),
+            });
+        }
+        return Err(Error::Usage {
+            message: format!("{id} is not linked"),
+            hint: "`cxvm list` shows the linked toolchains".into(),
+        });
+    };
+    let link = links.remove(index);
+    store.save_links(&links)?;
+
+    let selects = |spec: &Spec| spec.select([&id]).is_some();
+    let config_file = ctx.paths.config_file();
+    if Config::load(&config_file)?
+        .compiler
+        .as_ref()
+        .is_some_and(selects)
+    {
+        eprintln!(
+            "warning: {id} was the global default in {}; set another with `cxvm global <id>`",
+            config_file.display()
+        );
+    }
+    if let Ok(Resolution { spec, source }) = ctx.resolve()
+        && selects(&spec)
+        && !matches!(source, Source::Global(_))
+    {
+        eprintln!(
+            "warning: {id} is still pinned here ({source}); pin another with `cxvm use <id>`"
+        );
+    }
+    println!(
+        "Unlinked {id}; the files in {} are left alone",
+        link.prefix.display()
+    );
+    Ok(())
 }

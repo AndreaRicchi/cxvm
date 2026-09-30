@@ -133,8 +133,10 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Global { .. } => ("global", "M2"),
         Command::Exec { .. } => ("exec", "M2"),
         Command::Env { .. } => ("env", "M2"),
-        Command::Link { .. } => ("link", "M2"),
-        Command::Unlink { .. } => ("unlink", "M2"),
+        Command::Link { prefix, as_id } => {
+            return commands::link(&Context::from_process_env()?, &prefix, as_id.as_deref());
+        }
+        Command::Unlink { id } => return commands::unlink(&Context::from_process_env()?, &id),
         Command::Doctor => ("doctor", "M7"),
     };
     Err(Error::NotImplemented { command, milestone })

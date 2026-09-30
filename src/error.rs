@@ -72,6 +72,10 @@ pub enum Error {
         hint: &'static str,
     },
 
+    /// A request cxvm refuses, with what to do instead.
+    #[error("{message}\n  hint: {hint}")]
+    Usage { message: String, hint: String },
+
     /// A prefix whose compilers cannot be identified.
     #[error("cannot detect the toolchain in {}: {reason}\n  hint: {hint}", prefix.display())]
     Detect {

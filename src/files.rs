@@ -2,11 +2,27 @@
 
 use std::fs;
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 
 use serde::de::DeserializeOwned;
 
 use crate::error::{Error, Result};
+
+/// `path` made absolute against `cwd`, with `.` and `..` resolved lexically. Symlinks are
+/// kept as given, unlike `canonicalize`.
+pub(crate) fn absolute(cwd: &Path, path: &Path) -> PathBuf {
+    let mut result = PathBuf::new();
+    for component in cwd.join(path).components() {
+        match component {
+            Component::ParentDir => {
+                result.pop();
+            }
+            Component::CurDir => {}
+            other => result.push(other),
+        }
+    }
+    result
+}
 
 /// Runs `spawn` again while it fails with `ExecutableFileBusy` (ETXTBSY), for up to about a
 /// second. Executing a file fails that way while any process still holds it open for writing,
