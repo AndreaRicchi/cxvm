@@ -1,5 +1,7 @@
 //! The library's error type. Every message says what went wrong and what to do next.
 
+use std::path::PathBuf;
+
 /// Errors surfaced to the user by `cxvm` commands.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -25,6 +27,21 @@ pub enum Error {
         /// What is wrong with it.
         reason: String,
     },
+
+    /// `CXVM_HOME` is set to a relative path.
+    #[error(
+        "CXVM_HOME is set to `{}`, which is not an absolute path\n  \
+         hint: set CXVM_HOME to an absolute path, or unset it to use ~/.local/share/cxvm",
+        path.display()
+    )]
+    RelativeCxvmHome { path: PathBuf },
+
+    /// No usable `HOME` to derive default locations from.
+    #[error(
+        "cannot find your home directory: HOME is unset or not an absolute path\n  \
+         hint: set HOME, or set CXVM_HOME and XDG_CACHE_HOME to absolute paths"
+    )]
+    NoHome,
 }
 
 /// Shorthand for results carrying [`Error`].
