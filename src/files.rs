@@ -8,6 +8,31 @@ use serde::de::DeserializeOwned;
 
 use crate::error::{Error, Result};
 
+/// Runs `spawn` again while it fails with `ExecutableFileBusy` (ETXTBSY), for up to about a
+/// second. Executing a file fails that way while any process still holds it open for writing,
+/// e.g. a child forked by another thread just after the file was written, before its exec.
+pub(crate) fn retry_busy<T>(mut spawn: impl FnMut() -> io::Result<T>) -> io::Result<T> {
+    let mut delay = std::time::Duration::from_millis(5);
+    for _ in 0..8 {
+        match spawn() {
+            Err(err) if err.kind() == io::ErrorKind::ExecutableFileBusy => {
+                std::thread::sleep(delay);
+                delay *= 2;
+            }
+            result => return result,
+        }
+    }
+    spawn()
+}
+
+/// Whether `path` is a regular file (after following symlinks) with an execute bit set.
+pub(crate) fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+
+    path.metadata()
+        .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+}
+
 /// Reads and parses a TOML file; `Ok(None)` if it does not exist. `hint` is attached to parse
 /// errors and should say how to fix the file.
 pub(crate) fn read_toml<T: DeserializeOwned>(path: &Path, hint: &str) -> Result<Option<T>> {

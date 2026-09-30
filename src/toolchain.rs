@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use crate::error::{Error, Result};
+use crate::files;
 
 /// Compiler family.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -276,18 +277,12 @@ impl FromStr for Spec {
 /// The `system` compiler: the first executable `name` (`cc`, `c++`) on `path_var`, skipping
 /// entries that cxvm manages (inside `store`, or inside a `.cxvm` directory) and relative ones.
 pub fn find_system(name: &str, path_var: Option<&OsStr>, store: &Path) -> Option<PathBuf> {
-    use std::os::unix::fs::PermissionsExt;
-
     let managed =
         |dir: &Path| dir.starts_with(store) || dir.components().any(|c| c.as_os_str() == ".cxvm");
     std::env::split_paths(path_var?)
         .filter(|dir| dir.is_absolute() && !managed(dir))
         .map(|dir| dir.join(name))
-        .find(|candidate| {
-            candidate
-                .metadata()
-                .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
-        })
+        .find(|candidate| files::is_executable(candidate))
 }
 
 impl From<ToolchainId> for Spec {

@@ -72,6 +72,14 @@ pub enum Error {
         hint: &'static str,
     },
 
+    /// A prefix whose compilers cannot be identified.
+    #[error("cannot detect the toolchain in {}: {reason}\n  hint: {hint}", prefix.display())]
+    Detect {
+        prefix: PathBuf,
+        reason: String,
+        hint: String,
+    },
+
     /// A cxvm file (`config.toml`, `.cxvmrc`) has invalid content.
     #[error("{} is invalid: {message}\n  hint: {hint}", path.display())]
     InvalidFile {

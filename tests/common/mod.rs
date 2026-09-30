@@ -53,12 +53,7 @@ impl Sandbox {
     /// Places a toolchain in the store by hand, e.g. `install("gcc", "13.3.0")`.
     pub fn install(&self, kind: &str, version: &str) -> PathBuf {
         let prefix = self.store().join("toolchains").join(kind).join(version);
-        let (cc, cxx) = match kind {
-            "gcc" => ("gcc", "g++"),
-            _ => ("clang", "clang++"),
-        };
-        self.fake_compiler(&prefix.join("bin"), cc);
-        self.fake_compiler(&prefix.join("bin"), cxx);
+        fake_toolchain(&prefix, kind, version);
         prefix
     }
 
@@ -87,6 +82,46 @@ impl Sandbox {
             .env("XDG_CACHE_HOME", self.path("cache"))
             .env("PATH", self.bin());
         cmd
+    }
+}
+
+/// Writes `prefix/bin/{gcc,g++}` or `prefix/bin/{clang,clang++}` scripts that answer the
+/// probes cxvm runs (`-dumpfullversion`, `--version`, `-print-file-name=…`) like the real
+/// drivers. The fake clang's `-dumpversion` prints `4.2.1`, as old releases did.
+pub fn fake_toolchain(prefix: &Path, kind: &str, version: &str) {
+    let major = version.split('.').next().unwrap();
+    let (drivers, script) = match kind {
+        "gcc" => (
+            ["gcc", "g++"],
+            format!(
+                "#!/bin/sh\ncase \"$1\" in\n\
+                 -dumpfullversion) echo {version} ;;\n\
+                 -dumpversion) echo {major} ;;\n\
+                 --version) echo \"$(basename \"$0\") (Fake) {version}\" ;;\n\
+                 -print-file-name=*) f=\"${{1#-print-file-name=}}\"; \
+                 d=\"$(dirname \"$0\")/../lib64\"; \
+                 if [ -e \"$d/$f\" ]; then echo \"$d/$f\"; else echo \"$f\"; fi ;;\n\
+                 *) echo \"$(basename \"$0\") {version} $*\" ;;\n\
+                 esac\n"
+            ),
+        ),
+        "clang" => (
+            ["clang", "clang++"],
+            format!(
+                "#!/bin/sh\ncase \"$1\" in\n\
+                 -dumpversion) echo 4.2.1 ;;\n\
+                 --version) echo 'clang version {version} (fake)' ;;\n\
+                 *) echo \"$(basename \"$0\") {version} $*\" ;;\n\
+                 esac\n"
+            ),
+        ),
+        other => panic!("unknown kind {other}"),
+    };
+    for driver in drivers {
+        let path = prefix.join("bin").join(driver);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, &script).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
     }
 }
 
