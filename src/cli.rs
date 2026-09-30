@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::Shell;
 
+use crate::commands::{self, Context};
 use crate::error::{Error, Result};
 
 /// Per-project C/C++ compiler versions for x86_64 Linux.
@@ -121,9 +122,12 @@ pub fn run(cli: Cli) -> Result<()> {
             clap_complete::generate(shell, &mut Cli::command(), "cxvm", &mut io::stdout());
             return Ok(());
         }
+        Command::List {
+            available: true, ..
+        } => ("list --available", "M3"),
+        Command::List { json, .. } => return commands::list(&Context::from_process_env()?, json),
         Command::Install { .. } => ("install", "M2"),
         Command::Remove { .. } => ("remove", "M3"),
-        Command::List { .. } => ("list", "M1"),
         Command::Use { .. } => ("use", "M2"),
         Command::Global { .. } => ("global", "M2"),
         Command::Current { .. } => ("current", "M1"),
