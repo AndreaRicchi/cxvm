@@ -6,7 +6,7 @@
 ## Status
 
 - [x] M0 — Skeleton & CI
-- [ ] M1 — Config, IDs & resolution
+- [x] M1 — Config, IDs & resolution
 - [ ] M2 — Project activation (first useful version)
 - [ ] M3 — Clang prebuilt backend
 - [ ] M4 — GCC prebuilt backend + runtime libs
@@ -27,6 +27,16 @@ _(Append dated one-line entries: what was decided and why.)_
 - 2026-09-28: M0 stubs the §5 table only; `prune` and `catalog update` (M7) are added when M7 starts.
 - 2026-09-28: CI installs `musl-tools` from the start so the musl job does not change when C dependencies (rustls/ring, liblzma) arrive in M3.
 - 2026-09-28: §7 "small, focused commits" is standing authorisation to commit per logical step during a milestone; nothing is ever pushed by Claude.
+- 2026-09-30: A version is exact with three numeric components (`13.3.0`); one or two make it partial. Suffix syntax is `-[a-z0-9][a-z0-9._-]*`; leading zeros are rejected so ids and store directory names round-trip.
+- 2026-09-30: The suffix is part of the identity: `gcc@11` never matches `gcc@11.4.0-local`, only `gcc@11-local` does. Linked toolchains are never picked implicitly.
+- 2026-09-30: Resolution stops at the first source that is set, even if it names a toolchain that is not installed (pyenv/rbenv behaviour); a `.cxvmrc` that cannot be read is an error, never skipped.
+- 2026-09-30: `current` for a pin that is not installed still prints it (text or `--json` with `"installed": false`) and exits 1 with the install or link command.
+- 2026-09-30: `--json` for `list` and `current` landed in M1 (the flags already existed); `list --available` stays a stub until M3.
+- 2026-09-30: One library error enum (`thiserror`), every variant ending in a `hint:` line; no `anyhow` so far.
+- 2026-09-30: `.cxvmrc` and `config.toml` reject unknown keys; `config.toml` uses the same `compiler = "<id>"` key as `.cxvmrc`. M6 adds `[clang]` and `[integrations]` explicitly.
+- 2026-09-30: Empty `CXVM_COMPILER`/`CXVM_HOME`/XDG variables count as unset; relative XDG variables are ignored (XDG spec); a relative `CXVM_HOME` is an error.
+- 2026-09-30: Logic takes the environment as parameters (`Paths::from_env` closure, `Context`), since `std::env::set_var` is `unsafe` in edition 2024 and tests must not touch process state.
+- 2026-09-30: `system` is the first executable `cc` on PATH, skipping relative entries, the store and any `.cxvm` directory; no version probing yet.
 
 ---
 
