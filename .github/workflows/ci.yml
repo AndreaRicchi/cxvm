@@ -13,7 +13,7 @@ jobs:
     name: fmt, clippy, test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -28,7 +28,7 @@ jobs:
     env:
       TARGET: x86_64-unknown-linux-musl
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Needed once C dependencies (rustls/ring, liblzma) arrive; harmless now.
       - run: sudo apt-get update && sudo apt-get install -y musl-tools
       - uses: dtolnay/rust-toolchain@stable
@@ -43,7 +43,7 @@ jobs:
           file "$bin" | grep -q 'static' || { echo "::error::cxvm is not statically linked"; exit 1; }
           "$bin" --version
           "$bin" --help
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: cxvm-x86_64-unknown-linux-musl
           path: target/x86_64-unknown-linux-musl/release/cxvm
