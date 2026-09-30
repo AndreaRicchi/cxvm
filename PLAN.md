@@ -7,7 +7,7 @@
 
 - [x] M0 — Skeleton & CI
 - [x] M1 — Config, IDs & resolution
-- [ ] M2 — Project activation (first useful version)
+- [x] M2 — Project activation (first useful version)
 - [ ] M3 — Clang prebuilt backend
 - [ ] M4 — GCC prebuilt backend + runtime libs
 - [ ] M5 — GCC from source
@@ -37,6 +37,18 @@ _(Append dated one-line entries: what was decided and why.)_
 - 2026-09-30: Empty `CXVM_COMPILER`/`CXVM_HOME`/XDG variables count as unset; relative XDG variables are ignored (XDG spec); a relative `CXVM_HOME` is an error.
 - 2026-09-30: Logic takes the environment as parameters (`Paths::from_env` closure, `Context`), since `std::env::set_var` is `unsafe` in edition 2024 and tests must not touch process state.
 - 2026-09-30: `system` is the first executable `cc` on PATH, skipping relative entries, the store and any `.cxvm` directory; no version probing yet.
+- 2026-09-30: `use` pins in the nearest existing `.cxvmrc` walking up, else in the current directory; `.cxvm/` and the `.gitignore` entry go next to it.
+- 2026-09-30: `.cxvmrc` format is frozen as `compiler = "<exact id>"`; `use` rewrites the whole file (comments are lost). M6 brings format-preserving edits for `[clang]`/`[integrations]`.
+- 2026-09-30: Link metadata (id, prefix, cc, cxx, first `--version` line) lives in the store's `links.toml`, never in the linked prefix.
+- 2026-09-30: Linked ids always carry a suffix (`-local` by default); `--as` must be exact, suffixed, and match the detected kind and version. A prefix with both `bin/gcc` and `bin/clang` needs `--as`. Prefixes are stored absolute but not canonicalised.
+- 2026-09-30: GCC's version comes from `-dumpfullversion` (fallback `-dumpversion`); clang's from `clang version X.Y.Z` in `--version`, since old releases answer `-dumpversion` with 4.2.1.
+- 2026-09-30: rpath in M2 is GCC-only, from `g++ -print-file-name=libstdc++.so.6`; clang gets none until M6. For a distro GCC this yields a default library dir (harmless, redundant); M4 may skip default dirs.
+- 2026-09-30: A `system` pin has no `.cxvm/current`; `toolchain.cmake`/`env` point at the `cc`/`c++` found on PATH when generated, and PATH is left alone.
+- 2026-09-30: `.gitignore` gets `.cxvm/` unless `git check-ignore` (or the file itself) already ignores it; always on in M2, M6's `[integrations] gitignore` may make it opt-out.
+- 2026-09-30: `exec` replaces the process and looks the command up on the new PATH; `env` prints nothing when the toolchain is missing. Neither sets `LD_LIBRARY_PATH`.
+- 2026-09-30: `install` without an id regenerates `.cxvm/` from the project's `.cxvmrc` (ignoring `CXVM_COMPILER`) and points to `cxvm link` until downloads exist (M3).
+- 2026-09-30: Spawning a compiler retries on ETXTBSY for about a second: a file just written is briefly "busy" while another thread's forked child still holds it open, which made parallel tests flaky.
+- 2026-09-30: No store lock yet: `links.toml` and `config.toml` are written atomically, but concurrent `link`s can race until M3 adds the lock.
 
 ---
 
