@@ -66,7 +66,6 @@ fn stubs_fail_with_not_implemented() {
         &["install", "gcc@13", "--from-source"],
         &["remove", "gcc@13.3.0", "--force"],
         &["list", "--available", "--json"],
-        &["global", "clang@18"],
         &["exec", "--", "make", "-j4"],
         &["env"],
         &["env", "--shell", "fish"],

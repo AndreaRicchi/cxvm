@@ -134,7 +134,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Install { .. } => ("install", "M3"),
         Command::Remove { .. } => ("remove", "M3"),
         Command::Use { id } => return commands::use_(&Context::from_process_env()?, &id),
-        Command::Global { .. } => ("global", "M2"),
+        Command::Global { id } => return commands::global(&Context::from_process_env()?, &id),
         Command::Exec { .. } => ("exec", "M2"),
         Command::Env { .. } => ("env", "M2"),
         Command::Link { prefix, as_id } => {

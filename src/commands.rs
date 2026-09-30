@@ -593,3 +593,29 @@ pub fn unlink(ctx: &Context, id: &str) -> Result<()> {
     );
     Ok(())
 }
+
+/// `cxvm global`: set the default toolchain used outside projects.
+pub fn global(ctx: &Context, id: &str) -> Result<()> {
+    let spec: Spec = id.parse()?;
+    let target = Target::find(&ctx.store(), &spec, String::new())?;
+    let exact = target.spec();
+    let config_file = ctx.paths.config_file();
+    Config {
+        compiler: Some(exact.clone()),
+    }
+    .save(&config_file)?;
+    if exact == spec {
+        println!("Global default set to {exact} in {}", config_file.display());
+    } else {
+        println!(
+            "Global default set to {exact} (from {spec}) in {}",
+            config_file.display()
+        );
+    }
+    if let Ok(Resolution { source, .. }) = ctx.resolve()
+        && matches!(source, Source::Env | Source::ProjectRc(_))
+    {
+        eprintln!("note: here the toolchain is {source}, which overrides the global default");
+    }
+    Ok(())
+}
