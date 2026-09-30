@@ -8,6 +8,7 @@ pub mod cli;
 pub mod config;
 pub mod doctor;
 pub mod error;
+mod files;
 pub mod integrations;
 pub mod paths;
 pub mod project;

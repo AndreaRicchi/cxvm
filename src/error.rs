@@ -1,5 +1,6 @@
 //! The library's error type. Every message says what went wrong and what to do next.
 
+use std::io;
 use std::path::PathBuf;
 
 /// Errors surfaced to the user by `cxvm` commands.
@@ -42,6 +43,26 @@ pub enum Error {
          hint: set HOME, or set CXVM_HOME and XDG_CACHE_HOME to absolute paths"
     )]
     NoHome,
+
+    /// A filesystem operation failed.
+    #[error("cannot {action} {}: {source}\n  hint: {hint}", path.display())]
+    Io {
+        /// What cxvm was doing, e.g. "read".
+        action: &'static str,
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+        /// What the user can do about it.
+        hint: &'static str,
+    },
+
+    /// A cxvm file (`config.toml`, `.cxvmrc`) has invalid content.
+    #[error("{} is invalid: {message}\n  hint: {hint}", path.display())]
+    InvalidFile {
+        path: PathBuf,
+        message: String,
+        hint: String,
+    },
 }
 
 /// Shorthand for results carrying [`Error`].
