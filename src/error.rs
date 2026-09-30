@@ -29,6 +29,13 @@ pub enum Error {
         reason: String,
     },
 
+    /// `CXVM_COMPILER` is not a valid toolchain id.
+    #[error(
+        "CXVM_COMPILER is set to `{input}`, which is not a valid toolchain id: {reason}\n  \
+         hint: set it to e.g. `gcc@13.3.0`, `clang@18` or `system`, or unset it"
+    )]
+    InvalidEnvCompiler { input: String, reason: String },
+
     /// `CXVM_HOME` is set to a relative path.
     #[error(
         "CXVM_HOME is set to `{}`, which is not an absolute path\n  \
