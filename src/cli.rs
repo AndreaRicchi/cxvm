@@ -126,11 +126,11 @@ pub fn run(cli: Cli) -> Result<()> {
             available: true, ..
         } => ("list --available", "M3"),
         Command::List { json, .. } => return commands::list(&Context::from_process_env()?, json),
+        Command::Current { json } => return commands::current(&Context::from_process_env()?, json),
         Command::Install { .. } => ("install", "M2"),
         Command::Remove { .. } => ("remove", "M3"),
         Command::Use { .. } => ("use", "M2"),
         Command::Global { .. } => ("global", "M2"),
-        Command::Current { .. } => ("current", "M1"),
         Command::Exec { .. } => ("exec", "M2"),
         Command::Env { .. } => ("env", "M2"),
         Command::Link { .. } => ("link", "M2"),

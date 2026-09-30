@@ -36,6 +36,15 @@ pub enum Error {
     )]
     InvalidEnvCompiler { input: String, reason: String },
 
+    /// The active toolchain is not in the store.
+    #[error("{spec} is not installed ({reason})\n  hint: {hint}")]
+    NotInstalled {
+        spec: String,
+        /// Where the pin came from, e.g. `set by /p/.cxvmrc`.
+        reason: String,
+        hint: String,
+    },
+
     /// `CXVM_HOME` is set to a relative path.
     #[error(
         "CXVM_HOME is set to `{}`, which is not an absolute path\n  \

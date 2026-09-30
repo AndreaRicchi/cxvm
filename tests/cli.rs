@@ -1,4 +1,4 @@
-//! End-to-end checks of the CLI surface. M0: every §5 command exists, has help text, and the
+//! End-to-end checks of the CLI surface: every §5 command exists, has help text, and the
 //! stubs fail loudly instead of pretending to succeed.
 
 use assert_cmd::Command;
@@ -66,7 +66,6 @@ fn stubs_fail_with_not_implemented() {
         &["list", "--available", "--json"],
         &["use", "gcc@13"],
         &["global", "clang@18"],
-        &["current", "--json"],
         &["exec", "--", "make", "-j4"],
         &["env"],
         &["env", "--shell", "fish"],

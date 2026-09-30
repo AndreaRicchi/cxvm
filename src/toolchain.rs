@@ -5,7 +5,9 @@
 //! exact (`gcc@13.3.0`) and names one toolchain in the store.
 
 use std::cmp::Ordering;
+use std::ffi::OsStr;
 use std::fmt;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use crate::error::{Error, Result};
@@ -57,6 +59,11 @@ pub struct Version {
 }
 
 impl Version {
+    /// The part after `-`, e.g. `local` in `11.4.0-local`.
+    pub fn suffix(&self) -> Option<&str> {
+        self.suffix.as_deref()
+    }
+
     /// Whether all three numeric components are present.
     pub fn is_exact(&self) -> bool {
         self.numbers.len() == 3
@@ -266,6 +273,23 @@ impl FromStr for Spec {
     }
 }
 
+/// The `system` compiler: the first executable `name` (`cc`, `c++`) on `path_var`, skipping
+/// entries that cxvm manages (inside `store`, or inside a `.cxvm` directory) and relative ones.
+pub fn find_system(name: &str, path_var: Option<&OsStr>, store: &Path) -> Option<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let managed =
+        |dir: &Path| dir.starts_with(store) || dir.components().any(|c| c.as_os_str() == ".cxvm");
+    std::env::split_paths(path_var?)
+        .filter(|dir| dir.is_absolute() && !managed(dir))
+        .map(|dir| dir.join(name))
+        .find(|candidate| {
+            candidate
+                .metadata()
+                .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+        })
+}
+
 impl From<ToolchainId> for Spec {
     fn from(id: ToolchainId) -> Self {
         Spec::Toolchain {
@@ -469,6 +493,79 @@ mod tests {
     #[test]
     fn system_selects_nothing_from_the_store() {
         assert_eq!(select("system"), None);
+    }
+
+    mod system {
+        use std::ffi::OsString;
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        use super::*;
+
+        fn executable(path: &Path, mode: u32) -> PathBuf {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, "#!/bin/sh\n").unwrap();
+            fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+            path.to_owned()
+        }
+
+        fn path_var(dirs: &[PathBuf]) -> OsString {
+            std::env::join_paths(dirs).unwrap()
+        }
+
+        #[test]
+        fn finds_the_first_executable_on_path() {
+            let dir = tempfile::tempdir().unwrap();
+            let store = dir.path().join("store");
+            let first = executable(&dir.path().join("usr/bin/cc"), 0o755);
+            executable(&dir.path().join("opt/bin/cc"), 0o755);
+            let var = path_var(&[
+                dir.path().join("empty"),
+                dir.path().join("usr/bin"),
+                dir.path().join("opt/bin"),
+            ]);
+            assert_eq!(find_system("cc", Some(&var), &store), Some(first));
+        }
+
+        #[test]
+        fn skips_non_executables_and_directories() {
+            let dir = tempfile::tempdir().unwrap();
+            let store = dir.path().join("store");
+            executable(&dir.path().join("a/cc"), 0o644);
+            fs::create_dir_all(dir.path().join("b/cc")).unwrap();
+            let good = executable(&dir.path().join("c/cc"), 0o700);
+            let var = path_var(&[
+                dir.path().join("a"),
+                dir.path().join("b"),
+                dir.path().join("c"),
+            ]);
+            assert_eq!(find_system("cc", Some(&var), &store), Some(good));
+        }
+
+        #[test]
+        fn skips_cxvm_managed_directories() {
+            let dir = tempfile::tempdir().unwrap();
+            let store = dir.path().join("store");
+            let in_store = store.join("toolchains/gcc/13.3.0/bin");
+            let in_project = dir.path().join("proj/.cxvm/current/bin");
+            executable(&in_store.join("cc"), 0o755);
+            executable(&in_project.join("cc"), 0o755);
+            let system = executable(&dir.path().join("usr/bin/cc"), 0o755);
+            let var = path_var(&[in_store, in_project, dir.path().join("usr/bin")]);
+            assert_eq!(find_system("cc", Some(&var), &store), Some(system));
+        }
+
+        #[test]
+        fn skips_relative_and_empty_entries() {
+            let dir = tempfile::tempdir().unwrap();
+            let var = OsString::from(":.:bin");
+            assert_eq!(find_system("cc", Some(&var), dir.path()), None);
+        }
+
+        #[test]
+        fn nothing_found_without_path() {
+            assert_eq!(find_system("cc", None, Path::new("/store")), None);
+        }
     }
 
     #[test]

@@ -1,6 +1,7 @@
 //! Implementations of the commands, on top of the library modules. `cli` parses arguments and
 //! calls into here with a [`Context`] built from the process environment.
 
+use std::ffi::OsString;
 use std::path::PathBuf;
 
 use serde::Serialize;
@@ -8,9 +9,9 @@ use serde::Serialize;
 use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::paths::Paths;
-use crate::project::{self, Resolution};
-use crate::store::Store;
-use crate::toolchain::Spec;
+use crate::project::{self, Resolution, Source};
+use crate::store::{Installed, Store};
+use crate::toolchain::{self, Spec};
 
 /// Everything a command reads from the process environment.
 #[derive(Debug, Clone)]
@@ -19,6 +20,8 @@ pub struct Context {
     pub cwd: PathBuf,
     /// Value of `CXVM_COMPILER`.
     pub env_compiler: Option<String>,
+    /// Value of `PATH`, to find the `system` compiler.
+    pub path_var: Option<OsString>,
 }
 
 impl Context {
@@ -44,6 +47,7 @@ impl Context {
             paths,
             cwd,
             env_compiler,
+            path_var: std::env::var_os("PATH"),
         })
     }
 
@@ -147,4 +151,97 @@ fn not_installed(spec: &Spec) -> &'static str {
         Spec::System => "",
         Spec::Toolchain { .. } => ", not installed",
     }
+}
+
+#[derive(Debug, Serialize)]
+struct CurrentReport {
+    id: Option<String>,
+    requested: String,
+    source: &'static str,
+    source_path: Option<String>,
+    installed: bool,
+    path: Option<String>,
+}
+
+/// `cxvm current`: the active toolchain and why. Fails, after printing, when the resolved
+/// toolchain is not installed.
+pub fn current(ctx: &Context, json: bool) -> Result<()> {
+    let store = ctx.store();
+    let Resolution { spec, source } = ctx.resolve()?;
+    let (id, path, installed) = match &spec {
+        Spec::System => {
+            let cc = toolchain::find_system("cc", ctx.path_var.as_deref(), ctx.paths.data_dir());
+            (Some("system".to_owned()), cc, true)
+        }
+        Spec::Toolchain { .. } => match store.find(&spec)? {
+            Some(Installed { id, path }) => (Some(id.to_string()), Some(path), true),
+            None => (None, None, false),
+        },
+    };
+
+    if json {
+        let (source_name, source_path) = match &source {
+            Source::Env => ("env", None),
+            Source::ProjectRc(path) => ("cxvmrc", Some(path)),
+            Source::Global(path) => ("global", Some(path)),
+            Source::Default => ("default", None),
+        };
+        let report = CurrentReport {
+            id: id.clone(),
+            requested: spec.to_string(),
+            source: source_name,
+            source_path: source_path.map(|p| p.display().to_string()),
+            installed,
+            path: path.as_ref().map(|p| p.display().to_string()),
+        };
+        let text = serde_json::to_string_pretty(&report).expect("report serializes");
+        println!("{text}");
+    } else {
+        let requested = spec.to_string();
+        match id.as_deref() {
+            Some(id) if id != requested => println!("{id} ({requested}, {source})"),
+            _ => println!("{requested} ({source})"),
+        }
+        match (&path, &spec) {
+            (Some(path), _) => println!("{}", path.display()),
+            (None, Spec::System) => println!("no `cc` found on PATH"),
+            (None, Spec::Toolchain { .. }) => {}
+        }
+    }
+
+    if installed {
+        Ok(())
+    } else {
+        Err(not_installed_error(&store, &spec, &source)?)
+    }
+}
+
+/// The error for a toolchain spec with no match in the store, with the next step to take.
+fn not_installed_error(store: &Store, spec: &Spec, source: &Source) -> Result<Error> {
+    let mut hint = match spec {
+        Spec::Toolchain { kind, version } if version.suffix().is_some() => format!(
+            "register it with `cxvm link <prefix> --as {kind}@<x.y.z>-{}`",
+            version.suffix().unwrap_or_default()
+        ),
+        _ => format!("run `cxvm install {spec}`"),
+    };
+    if let Spec::Toolchain { kind, .. } = spec {
+        let same_kind: Vec<String> = store
+            .installed()?
+            .into_iter()
+            .filter(|t| t.id.kind() == *kind)
+            .map(|t| t.id.to_string())
+            .collect();
+        if !same_kind.is_empty() {
+            hint.push_str(&format!(
+                ", or pin an installed version: {}",
+                same_kind.join(", ")
+            ));
+        }
+    }
+    Ok(Error::NotInstalled {
+        spec: spec.to_string(),
+        reason: source.to_string(),
+        hint,
+    })
 }
