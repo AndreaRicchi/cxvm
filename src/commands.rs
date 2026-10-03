@@ -6,7 +6,8 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
-use crate::catalog::{self, Catalog};
+use crate::backends;
+use crate::catalog::{self, Catalog, Release};
 use crate::config::Config;
 use crate::detect;
 use crate::error::{Error, Result};
@@ -441,8 +442,8 @@ pub fn use_(ctx: &Context, id: &str) -> Result<()> {
     Ok(())
 }
 
-/// `cxvm install` without an id: make sure the project's pinned toolchain is present and
-/// regenerate `.cxvm/`. Downloading arrives in M3.
+/// `cxvm install` without an id: install the project's pinned toolchain if it is missing and
+/// the catalog has it, then regenerate `.cxvm/`.
 pub fn install_pinned(ctx: &Context) -> Result<()> {
     let Some(rc) = project::find_rc(&ctx.cwd) else {
         return Err(Error::Usage {
@@ -457,10 +458,143 @@ pub fn install_pinned(ctx: &Context) -> Result<()> {
     };
     let spec = project::ProjectRc::load(&rc)?.compiler;
     let context = format!(" (set by {})", rc.display());
-    let target = Target::find(&ctx.store(), &spec, context)?;
+    let store = ctx.store();
+    let target = match Target::find(&store, &spec, context) {
+        Ok(target) => {
+            println!("{} is available", target.spec());
+            target
+        }
+        Err(err @ Error::NotInstalled { .. }) => {
+            let catalog = ctx.catalog()?;
+            let installable = match &spec {
+                Spec::Toolchain { kind, version } => {
+                    version.suffix().is_none() && backends::backend_for(*kind).is_some()
+                }
+                Spec::System => false,
+            };
+            match catalog.resolve(&spec).filter(|_| installable) {
+                Some(release) => Target::Toolchain(install_release(ctx, release)?),
+                None => return Err(err),
+            }
+        }
+        Err(err) => return Err(err),
+    };
     let root = rc.parent().unwrap_or(&ctx.cwd).to_owned();
-    println!("{} is available", target.spec());
     generate_project(ctx, &root, &target)
+}
+
+/// `cxvm install <id>`: download a release from the catalog and install it in the store.
+pub fn install(ctx: &Context, id: &str, from_source: bool) -> Result<()> {
+    let spec: Spec = id.parse()?;
+    let Spec::Toolchain { kind, version } = &spec else {
+        return Err(Error::Usage {
+            message: "`system` is the compiler found on PATH; cxvm does not install it".into(),
+            hint: "install a toolchain such as `cxvm install clang@19`, or pin the system \
+                   compiler with `cxvm use system`"
+                .into(),
+        });
+    };
+    if let Some(suffix) = version.suffix() {
+        return Err(Error::Usage {
+            message: format!(
+                "{spec} has a suffix (`-{suffix}`), which only linked toolchains have"
+            ),
+            hint: format!(
+                "install `{kind}@<x.y.z>` without a suffix, or register an existing install \
+                 with `cxvm link <prefix> --as {spec}`"
+            ),
+        });
+    }
+    if from_source {
+        return Err(Error::NotImplemented {
+            command: "install --from-source",
+            milestone: "M5",
+        });
+    }
+    if backends::backend_for(*kind).is_none() {
+        return Err(Error::NotImplemented {
+            command: "install gcc@…",
+            milestone: "M4",
+        });
+    }
+    let catalog = ctx.catalog()?;
+    let Some(release) = catalog.resolve(&spec) else {
+        let major = version.to_string();
+        let major = major.split('.').next().unwrap_or_default();
+        let same_major: Vec<String> = catalog
+            .releases()
+            .iter()
+            .filter(|r| r.id.kind() == *kind)
+            .filter(|r| r.id.version().to_string().split('.').next() == Some(major))
+            .map(|r| r.id.to_string())
+            .collect();
+        let hint = if same_major.is_empty() {
+            "`cxvm list --available` shows what can be installed; register other builds with \
+             `cxvm link <prefix>`"
+                .to_owned()
+        } else {
+            format!("available: {}", same_major.join(", "))
+        };
+        return Err(Error::Usage {
+            message: format!("{spec} is not in {}", catalog.origin()),
+            hint,
+        });
+    };
+    if !spec.is_exact() {
+        println!("Resolved {spec} to {}", release.id);
+    }
+    let toolchain = install_release(ctx, release)?;
+    println!("  pin it with `cxvm use {}`", toolchain.id);
+    Ok(())
+}
+
+/// Installs `release` unless the store has it already, and returns it.
+fn install_release(ctx: &Context, release: &Release) -> Result<Installed> {
+    let store = ctx.store();
+    let present = |store: &Store| -> Result<Option<Installed>> {
+        Ok(store.installed()?.into_iter().find(|t| t.id == release.id))
+    };
+    let already = |toolchain: Installed| {
+        println!(
+            "{} is already installed in {}",
+            toolchain.id,
+            toolchain.path.display()
+        );
+        Ok(toolchain)
+    };
+    if let Some(toolchain) = present(&store)? {
+        return already(toolchain);
+    }
+    let lock = store.lock()?;
+    // Another cxvm may have installed it while this one waited for the lock.
+    if let Some(toolchain) = present(&store)? {
+        return already(toolchain);
+    }
+    println!(
+        "Installing {} ({} download)",
+        release.id,
+        human_size(release.size)
+    );
+    let report = backends::install(&store, &lock, release)?;
+    drop(lock);
+    let toolchain = report.toolchain;
+    if let Some(problem) = report.warning {
+        eprintln!(
+            "warning: {} is installed, but cannot build and run a C++ program here: {problem}\n  \
+             hint: clang builds C++ with the newest GCC installation it finds on the host. \
+             Either there is none (install g++ or your distribution's libstdc++ development \
+             package), or its libstdc++ is too new for this clang: pass an older one with \
+             `--gcc-install-dir=/usr/lib/gcc/x86_64-linux-gnu/<version>` (clang 16 and later). \
+             Pinning that GCC in .cxvmrc arrives in M6",
+            toolchain.id
+        );
+    }
+    println!("Installed {} in {}", toolchain.id, toolchain.path.display());
+    println!(
+        "  the downloaded archive stays in {}; delete it to free space",
+        report.archive.display()
+    );
+    Ok(toolchain)
 }
 
 /// `cxvm link`: register the toolchain in `prefix` under a detected `-local` id, or `as_id`.

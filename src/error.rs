@@ -92,6 +92,14 @@ pub enum Error {
         hint: String,
     },
 
+    /// An install that failed after the download.
+    #[error("cannot install {id}: {reason}\n  hint: {hint}")]
+    Install {
+        id: String,
+        reason: String,
+        hint: String,
+    },
+
     /// A cxvm file (`config.toml`, `.cxvmrc`) has invalid content.
     #[error("{} is invalid: {message}\n  hint: {hint}", path.display())]
     InvalidFile {

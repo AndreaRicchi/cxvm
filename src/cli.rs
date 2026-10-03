@@ -133,7 +133,14 @@ pub fn run(cli: Cli) -> Result<()> {
             id: None,
             from_source: false,
         } => return commands::install_pinned(&Context::from_process_env()?),
-        Command::Install { .. } => ("install", "M3"),
+        Command::Install {
+            id: None,
+            from_source: true,
+        } => ("install --from-source", "M5"),
+        Command::Install {
+            id: Some(id),
+            from_source,
+        } => return commands::install(&Context::from_process_env()?, &id, from_source),
         Command::Remove { .. } => ("remove", "M3"),
         Command::Use { id } => return commands::use_(&Context::from_process_env()?, &id),
         Command::Global { id } => return commands::global(&Context::from_process_env()?, &id),

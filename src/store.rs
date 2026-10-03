@@ -227,6 +227,37 @@ impl Store {
         Ok(())
     }
 
+    /// A fresh path in `staging/` for this process, named after `what`.
+    pub fn staging_path(&self, what: &str) -> PathBuf {
+        self.paths
+            .staging_dir()
+            .join(format!("{what}.{}", std::process::id()))
+    }
+
+    /// Moves the prefix prepared in `staged` into the store as `id`, atomically.
+    pub fn commit(&self, _lock: &StoreLock, staged: &Path, id: &ToolchainId) -> Result<PathBuf> {
+        let target = self.paths.toolchain_dir(id);
+        if target.exists() {
+            return Err(Error::Usage {
+                message: format!("{id} is already installed in {}", target.display()),
+                hint: format!("remove it first with `cxvm remove {id}`"),
+            });
+        }
+        let parent = target.parent().expect("toolchain dirs have a parent");
+        let io_error = |action, path: &Path| {
+            let path = path.to_owned();
+            move |source| Error::Io {
+                action,
+                path,
+                source,
+                hint: "check the permissions of the cxvm store",
+            }
+        };
+        fs::create_dir_all(parent).map_err(io_error("create", parent))?;
+        fs::rename(staged, &target).map_err(io_error("write", &target))?;
+        Ok(target)
+    }
+
     /// The highest installed toolchain matching `spec`; `None` for `system` or no match.
     pub fn find(&self, spec: &Spec) -> Result<Option<Installed>> {
         let installed = self.installed()?;
@@ -235,6 +266,75 @@ impl Store {
         };
         Ok(installed.iter().find(|t| &t.id == id).cloned())
     }
+}
+
+/// Name of the metadata file in each installed toolchain's prefix.
+pub const META_FILE: &str = ".cxvm-meta.toml";
+
+/// What `.cxvm-meta.toml` records about a toolchain cxvm installed.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Meta {
+    pub id: String,
+    /// Backend that installed it, e.g. `llvm-prebuilt`.
+    pub backend: String,
+    /// Archive it came from, and the archive's sha256.
+    pub url: String,
+    pub sha256: String,
+    /// Install time, UTC, RFC 3339.
+    pub installed: String,
+    pub cc: PathBuf,
+    pub cxx: PathBuf,
+    /// First line of `cc --version`.
+    pub version: String,
+}
+
+impl Meta {
+    /// Writes `prefix/.cxvm-meta.toml`.
+    pub fn write(&self, prefix: &Path) -> Result<()> {
+        let path = prefix.join(META_FILE);
+        let body = toml::to_string(self).map_err(|err| Error::InvalidFile {
+            path: path.clone(),
+            message: format!("cannot encode the metadata: {err}"),
+            hint: "install into a store whose path is valid UTF-8".into(),
+        })?;
+        files::write_atomic(
+            &path,
+            &format!("# Written by cxvm when it installed this toolchain.\n{body}"),
+        )
+    }
+
+    /// Reads `prefix/.cxvm-meta.toml`; `None` if there is none.
+    pub fn load(prefix: &Path) -> Result<Option<Self>> {
+        files::read_toml(
+            &prefix.join(META_FILE),
+            "reinstall the toolchain with `cxvm remove` and `cxvm install`",
+        )
+    }
+}
+
+/// `time` as an RFC 3339 UTC timestamp, e.g. `2026-10-03T14:05:09Z`.
+pub fn utc_timestamp(time: std::time::SystemTime) -> String {
+    let secs = time
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let (days, rest) = (secs / 86_400, secs % 86_400);
+    // Civil date from days since 1970-01-01 (Howard Hinnant's algorithm).
+    let z = days as i64 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+        rest / 3600,
+        rest % 3600 / 60,
+        rest % 60
+    )
 }
 
 /// Exclusive hold on the store, released when dropped.
@@ -499,6 +599,50 @@ mod tests {
         let _lock = s.lock().unwrap();
         assert_eq!(fs::read_dir(s.paths().staging_dir()).unwrap().count(), 0);
         assert!(s.paths().lock_file().is_file());
+    }
+
+    #[test]
+    fn meta_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(Meta::load(dir.path()).unwrap(), None);
+        let meta = Meta {
+            id: "clang@19.1.0".into(),
+            backend: "llvm-prebuilt".into(),
+            url: "https://example.invalid/a.tar.xz".into(),
+            sha256: "0".repeat(64),
+            installed: "2026-10-03T14:05:09Z".into(),
+            cc: "/s/toolchains/clang/19.1.0/bin/clang".into(),
+            cxx: "/s/toolchains/clang/19.1.0/bin/clang++".into(),
+            version: "clang version 19.1.0".into(),
+        };
+        meta.write(dir.path()).unwrap();
+        assert_eq!(Meta::load(dir.path()).unwrap(), Some(meta));
+    }
+
+    #[test]
+    fn timestamps_are_rfc3339_utc() {
+        let at = |secs| utc_timestamp(std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs));
+        assert_eq!(at(0), "1970-01-01T00:00:00Z");
+        assert_eq!(at(951_782_400), "2000-02-29T00:00:00Z");
+        assert_eq!(at(1_791_036_309), "2026-10-03T14:05:09Z");
+        assert_eq!(at(4_107_542_399), "2100-02-28T23:59:59Z");
+    }
+
+    #[test]
+    fn commit_moves_a_staged_prefix_into_the_store_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = store(dir.path());
+        let lock = s.lock().unwrap();
+        let id: ToolchainId = "clang@19.1.0".parse().unwrap();
+        let staged = s.staging_path("clang-19.1.0");
+        fs::create_dir_all(staged.join("bin")).unwrap();
+        let target = s.commit(&lock, &staged, &id).unwrap();
+        assert_eq!(target, s.paths().toolchain_dir(&id));
+        assert!(target.join("bin").is_dir() && !staged.exists());
+
+        fs::create_dir_all(&staged).unwrap();
+        let err = s.commit(&lock, &staged, &id).unwrap_err().to_string();
+        assert!(err.contains("already installed"), "{err}");
     }
 
     #[test]
