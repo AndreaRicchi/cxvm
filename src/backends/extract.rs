@@ -1,7 +1,7 @@
-//! Unpacking `.tar.xz` release archives into a staging directory.
+//! Unpacking `.tar.xz` and `.tar.gz` release archives into a staging directory.
 //!
-//! Release archives hold one top-level directory (`LLVM-19.1.0-Linux-X64/`), which is dropped
-//! so that its content becomes the install prefix. Nothing may land outside the destination:
+//! Release archives hold one top-level directory (`LLVM-19.1.0-Linux-X64/`,
+//! `xpack-gcc-13.3.0-2/`), which is dropped so that its content becomes the install prefix. Nothing may land outside the destination:
 //! absolute paths, `..` components and symlinks pointing out of the tree are refused.
 
 use std::ffi::OsString;
@@ -12,9 +12,17 @@ use std::path::{Component, Path, PathBuf};
 use indicatif::{ProgressBar, ProgressStyle};
 use tar::EntryType;
 
-/// Unpacks the `.tar.xz` at `archive` into `dest`, without its top-level directory. The error
-/// is a reason for the user.
-pub fn unpack_tar_xz(archive: &Path, dest: &Path) -> Result<(), String> {
+/// Unpacks the `.tar.xz` or `.tar.gz` at `archive`, told apart by name, into `dest`, without
+/// its top-level directory. The error is a reason for the user.
+pub fn unpack_archive(archive: &Path, dest: &Path) -> Result<(), String> {
+    let name = archive.to_string_lossy();
+    let gzip = name.ends_with(".tar.gz");
+    if !gzip && !name.ends_with(".tar.xz") {
+        return Err(format!(
+            "{} is neither a .tar.xz nor a .tar.gz archive",
+            archive.display()
+        ));
+    }
     let file =
         fs::File::open(archive).map_err(|e| format!("cannot read {}: {e}", archive.display()))?;
     let size = file.metadata().map(|m| m.len()).unwrap_or(0);
@@ -23,7 +31,11 @@ pub fn unpack_tar_xz(archive: &Path, dest: &Path) -> Result<(), String> {
         inner: BufReader::with_capacity(1 << 20, file),
         progress: progress.clone(),
     };
-    let result = unpack(liblzma::read::XzDecoder::new(reader), dest);
+    let result = if gzip {
+        unpack(flate2::read::GzDecoder::new(reader), dest)
+    } else {
+        unpack(liblzma::read::XzDecoder::new(reader), dest)
+    };
     match &result {
         Ok(()) => progress.finish_and_clear(),
         Err(_) => progress.abandon(),
@@ -329,11 +341,39 @@ mod tests {
         )
         .unwrap();
         encoder.finish().unwrap();
-        unpack_tar_xz(&archive, &dir.path().join("out")).unwrap();
+        unpack_archive(&archive, &dir.path().join("out")).unwrap();
         assert!(dir.path().join("out/bin/clang").is_file());
 
         fs::write(&archive, "not xz").unwrap();
-        let err = unpack_tar_xz(&archive, &dir.path().join("bad")).unwrap_err();
+        let err = unpack_archive(&archive, &dir.path().join("bad")).unwrap_err();
         assert!(err.contains("cannot read the archive"), "{err}");
+    }
+
+    #[test]
+    fn unpacks_a_tar_gz_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive = dir.path().join("a.tar.gz");
+        let mut encoder = flate2::write::GzEncoder::new(
+            fs::File::create(&archive).unwrap(),
+            flate2::Compression::fast(),
+        );
+        io::Write::write_all(&mut encoder, &tar(&[Item::File("top/bin/gcc", "x", 0o755)])).unwrap();
+        encoder.finish().unwrap();
+        unpack_archive(&archive, &dir.path().join("out")).unwrap();
+        assert!(dir.path().join("out/bin/gcc").is_file());
+
+        fs::write(&archive, "not gzip").unwrap();
+        let err = unpack_archive(&archive, &dir.path().join("bad")).unwrap_err();
+        assert!(err.contains("cannot read the archive"), "{err}");
+    }
+
+    #[test]
+    fn refuses_other_archive_formats() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive = dir.path().join("a.zip");
+        fs::write(&archive, "PK").unwrap();
+        let err = unpack_archive(&archive, &dir.path().join("out")).unwrap_err();
+        assert!(err.contains("neither a .tar.xz nor a .tar.gz"), "{err}");
+        assert!(!dir.path().join("out").exists());
     }
 }

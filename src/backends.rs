@@ -36,7 +36,7 @@ impl Backend for LlvmPrebuilt {
     }
 
     fn prepare(&self, _release: &Release, archive: &Path, prefix: &Path) -> Result<(), String> {
-        extract::unpack_tar_xz(archive, prefix)
+        extract::unpack_archive(archive, prefix)
     }
 }
 
