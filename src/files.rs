@@ -41,6 +41,11 @@ pub(crate) fn retry_busy<T>(mut spawn: impl FnMut() -> io::Result<T>) -> io::Res
     spawn()
 }
 
+/// Whether `name` is one ordinary, visible path component: not empty, no `/`, no leading `.`.
+pub(crate) fn is_plain_file_name(name: &str) -> bool {
+    !name.is_empty() && !name.starts_with('.') && !name.contains(['/', '\0'])
+}
+
 /// Whether `path` is a regular file (after following symlinks) with an execute bit set.
 pub(crate) fn is_executable(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;

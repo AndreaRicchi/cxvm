@@ -124,8 +124,9 @@ pub fn run(cli: Cli) -> Result<()> {
             return Ok(());
         }
         Command::List {
-            available: true, ..
-        } => ("list --available", "M3"),
+            available: true,
+            json,
+        } => return commands::list_available(&Context::from_process_env()?, json),
         Command::List { json, .. } => return commands::list(&Context::from_process_env()?, json),
         Command::Current { json } => return commands::current(&Context::from_process_env()?, json),
         Command::Install {

@@ -4,6 +4,7 @@
 //! exit code. See `PLAN.md` for the specification and milestone plan.
 
 pub mod backends;
+pub mod catalog;
 pub mod cli;
 pub mod commands;
 pub mod config;

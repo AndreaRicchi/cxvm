@@ -65,7 +65,6 @@ fn stubs_fail_with_not_implemented() {
     let invocations: &[&[&str]] = &[
         &["install", "gcc@13", "--from-source"],
         &["remove", "gcc@13.3.0", "--force"],
-        &["list", "--available", "--json"],
         &["doctor"],
     ];
     // In a sandbox: a stub that becomes a real command must never touch the real store.

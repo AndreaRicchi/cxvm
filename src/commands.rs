@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
+use crate::catalog::{self, Catalog};
 use crate::config::Config;
 use crate::detect;
 use crate::error::{Error, Result};
@@ -27,6 +28,8 @@ pub struct Context {
     pub path_var: Option<OsString>,
     /// Value of `SHELL`, the default syntax for `cxvm env`.
     pub shell: Option<OsString>,
+    /// Value of `CXVM_CATALOG`: a catalog file to use instead of the embedded one.
+    pub catalog: Option<PathBuf>,
 }
 
 impl Context {
@@ -48,13 +51,22 @@ impl Context {
                 });
             }
         };
+        let catalog = std::env::var_os(catalog::ENV_VAR)
+            .filter(|value| !value.is_empty())
+            .map(|value| files::absolute(&cwd, Path::new(&value)));
         Ok(Self {
             paths,
             cwd,
             env_compiler,
             path_var: std::env::var_os("PATH"),
             shell: std::env::var_os("SHELL"),
+            catalog,
         })
+    }
+
+    /// The installable releases: `CXVM_CATALOG`, or the catalog built into cxvm.
+    pub fn catalog(&self) -> Result<Catalog> {
+        Catalog::load(self.catalog.as_deref())
     }
 
     pub fn store(&self) -> Store {
@@ -155,6 +167,60 @@ pub fn list(ctx: &Context, json: bool) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[derive(Debug, Serialize)]
+struct AvailableEntry {
+    id: String,
+    size: u64,
+    installed: bool,
+    url: String,
+}
+
+/// `cxvm list --available`: the releases cxvm can install, newest first per kind.
+pub fn list_available(ctx: &Context, json: bool) -> Result<()> {
+    let catalog = ctx.catalog()?;
+    let installed = ctx.store().installed()?;
+    let mut releases: Vec<_> = catalog.releases().iter().collect();
+    releases.sort_by(|a, b| a.id.kind().cmp(&b.id.kind()).then(b.id.cmp(&a.id)));
+    let entries: Vec<AvailableEntry> = releases
+        .into_iter()
+        .map(|release| AvailableEntry {
+            id: release.id.to_string(),
+            size: release.size,
+            installed: installed.iter().any(|t| t.id == release.id),
+            url: release.url.clone(),
+        })
+        .collect();
+
+    if json {
+        let text = serde_json::to_string_pretty(&entries).expect("entries serialize");
+        println!("{text}");
+        return Ok(());
+    }
+    println!("Installable toolchains, from {}:", catalog.origin());
+    let width = entries.iter().map(|e| e.id.len()).max().unwrap_or(0);
+    for entry in &entries {
+        let line = format!(
+            "  {:<width$}  {:>9}  {}",
+            entry.id,
+            human_size(entry.size),
+            if entry.installed { "installed" } else { "" }
+        );
+        println!("{}", line.trim_end());
+    }
+    Ok(())
+}
+
+/// `1.8 GiB`, `950 MiB`: download sizes for humans.
+pub(crate) fn human_size(bytes: u64) -> String {
+    const MIB: u64 = 1 << 20;
+    const GIB: u64 = 1 << 30;
+    if bytes >= GIB {
+        format!("{:.1} GiB", bytes as f64 / GIB as f64)
+    } else {
+        format!("{} MiB", bytes.div_ceil(MIB))
+    }
 }
 
 /// Suffix for a spec that matched nothing in the store.

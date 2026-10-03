@@ -160,3 +160,95 @@ fn linked_toolchains_are_listed_and_marked() {
     assert_eq!(json[0]["path"], serde_json::json!(prefix));
     assert_eq!(json[0]["linked"], serde_json::json!(true));
 }
+
+/// A catalog of `versions`, all pointing at an unreachable URL.
+fn catalog(s: &Sandbox, versions: &[&str]) -> std::path::PathBuf {
+    let path = s.path("catalog.toml");
+    let entries: Vec<String> = versions
+        .iter()
+        .map(|v| {
+            format!(
+                "[[clang]]\nversion = \"{v}\"\nasset = \"LLVM-{v}-Linux-X64.tar.xz\"\n\
+                 url = \"http://127.0.0.1:1/LLVM-{v}-Linux-X64.tar.xz\"\nsize = 1610612736\n\
+                 sha256 = \"{}\"\nsource = \"test\"\n",
+                "0".repeat(64)
+            )
+        })
+        .collect();
+    std::fs::write(&path, entries.join("\n")).unwrap();
+    path
+}
+
+#[test]
+fn available_lists_the_catalog_newest_first_marking_installed() {
+    let s = Sandbox::new();
+    let catalog = catalog(&s, &["18.1.8", "19.1.7", "19.1.0"]);
+    s.install("clang", "19.1.0");
+    let out = s
+        .cxvm("")
+        .args(["list", "--available"])
+        .env("CXVM_CATALOG", &catalog)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let text = stdout(&out);
+    let lines: Vec<&str> = text.lines().map(str::trim_end).collect();
+    assert!(lines[0].contains("CXVM_CATALOG"), "{text}");
+    assert_eq!(
+        lines[1..],
+        [
+            "  clang@19.1.7    1.5 GiB",
+            "  clang@19.1.0    1.5 GiB  installed",
+            "  clang@18.1.8    1.5 GiB",
+        ]
+    );
+}
+
+#[test]
+fn available_json_has_ids_sizes_and_urls() {
+    let s = Sandbox::new();
+    let catalog = catalog(&s, &["19.1.0"]);
+    let out = s
+        .cxvm("")
+        .args(["list", "--available", "--json"])
+        .env("CXVM_CATALOG", &catalog)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        json,
+        serde_json::json!([{
+            "id": "clang@19.1.0",
+            "size": 1610612736u64,
+            "installed": false,
+            "url": "http://127.0.0.1:1/LLVM-19.1.0-Linux-X64.tar.xz",
+        }])
+    );
+}
+
+#[test]
+fn available_uses_the_embedded_catalog_by_default() {
+    let s = Sandbox::new();
+    s.cxvm("")
+        .args(["list", "--available"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("built into cxvm"))
+        .stdout(predicate::str::contains("clang@19.1.0"))
+        .stdout(predicate::str::contains("clang@11.1.0"));
+}
+
+#[test]
+fn available_reports_a_broken_catalog_file() {
+    let s = Sandbox::new();
+    let path = s.path("catalog.toml");
+    std::fs::write(&path, "[[clang]]\nversion = 1\n").unwrap();
+    s.cxvm("")
+        .args(["list", "--available"])
+        .env("CXVM_CATALOG", &path)
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("catalog.toml is invalid"))
+        .stderr(predicate::str::contains("unset CXVM_CATALOG"));
+}
