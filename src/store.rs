@@ -175,6 +175,58 @@ impl Store {
         Ok(installed)
     }
 
+    /// Takes the store lock, waiting (with a message) while another cxvm process holds it,
+    /// then deletes what interrupted installs and removals left in `staging/`. Every store
+    /// mutation (install, remove, link, unlink) runs under the lock.
+    pub fn lock(&self) -> Result<StoreLock> {
+        let path = self.paths.lock_file();
+        let io_error = |action, path: &Path| {
+            let path = path.to_owned();
+            move |source| Error::Io {
+                action,
+                path,
+                source,
+                hint: "check that the cxvm store is writable",
+            }
+        };
+        fs::create_dir_all(self.paths.data_dir())
+            .map_err(io_error("create", self.paths.data_dir()))?;
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&path)
+            .map_err(io_error("open", &path))?;
+        match file.try_lock() {
+            Ok(()) => {}
+            Err(fs::TryLockError::WouldBlock) => {
+                eprintln!(
+                    "waiting for another cxvm process (lock: {})",
+                    path.display()
+                );
+                file.lock().map_err(io_error("lock", &path))?;
+            }
+            Err(fs::TryLockError::Error(source)) => return Err(io_error("lock", &path)(source)),
+        }
+        let lock = StoreLock { _file: file };
+        self.clean_staging(&lock)?;
+        Ok(lock)
+    }
+
+    /// Deletes everything in `staging/`. Only safe under the lock: nothing else is in flight.
+    fn clean_staging(&self, _lock: &StoreLock) -> Result<()> {
+        let staging = self.paths.staging_dir();
+        for entry in read_dir(&staging)? {
+            let path = entry.path();
+            eprintln!(
+                "note: deleting {}, left by an interrupted install or removal",
+                path.display()
+            );
+            remove_all(&path)?;
+        }
+        Ok(())
+    }
+
     /// The highest installed toolchain matching `spec`; `None` for `system` or no match.
     pub fn find(&self, spec: &Spec) -> Result<Option<Installed>> {
         let installed = self.installed()?;
@@ -182,6 +234,30 @@ impl Store {
             return Ok(None);
         };
         Ok(installed.iter().find(|t| &t.id == id).cloned())
+    }
+}
+
+/// Exclusive hold on the store, released when dropped.
+#[derive(Debug)]
+pub struct StoreLock {
+    _file: fs::File,
+}
+
+/// Deletes `path`, a directory tree or a file; a missing path is fine.
+pub(crate) fn remove_all(path: &Path) -> Result<()> {
+    let result = match fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_dir() => fs::remove_dir_all(path),
+        Ok(_) => fs::remove_file(path),
+        Err(err) => Err(err),
+    };
+    match result {
+        Err(err) if err.kind() != io::ErrorKind::NotFound => Err(Error::Io {
+            action: "delete",
+            path: path.to_owned(),
+            source: err,
+            hint: "check the permissions of the cxvm store, or delete it by hand",
+        }),
+        _ => Ok(()),
     }
 }
 
@@ -387,6 +463,42 @@ mod tests {
         fs::write(s.paths().toolchains_dir().join("gcc/14.2.0"), "").unwrap();
         fs::write(s.paths().toolchains_dir().join("clang"), "").unwrap();
         assert_eq!(ids(&s.installed().unwrap()), ["gcc@13.3.0"]);
+    }
+
+    #[test]
+    fn lock_waits_for_the_holder() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let dir = tempfile::tempdir().unwrap();
+        let s = store(dir.path());
+        let held = s.lock().unwrap();
+        let acquired = Arc::new(AtomicBool::new(false));
+        let waiter = {
+            let (s, acquired) = (s.clone(), Arc::clone(&acquired));
+            std::thread::spawn(move || {
+                let _lock = s.lock().unwrap();
+                acquired.store(true, Ordering::SeqCst);
+            })
+        };
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(!acquired.load(Ordering::SeqCst), "lock taken twice");
+        drop(held);
+        waiter.join().unwrap();
+        assert!(acquired.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn lock_cleans_staging() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = store(dir.path());
+        let leftover = s.paths().staging_dir().join("clang@18.1.8.123/bin");
+        fs::create_dir_all(&leftover).unwrap();
+        fs::write(leftover.join("clang"), "").unwrap();
+        fs::write(s.paths().staging_dir().join("stray"), "").unwrap();
+        let _lock = s.lock().unwrap();
+        assert_eq!(fs::read_dir(s.paths().staging_dir()).unwrap().count(), 0);
+        assert!(s.paths().lock_file().is_file());
     }
 
     #[test]

@@ -431,6 +431,7 @@ pub fn link(ctx: &Context, prefix: &Path, as_id: Option<&str>) -> Result<()> {
     let (cc, cxx) = detect::compilers(&prefix, id.kind());
     let version_line = detected.map(|d| d.version_line).unwrap_or_default();
 
+    let _lock = store.lock()?;
     let mut links = store.links()?;
     if let Some(existing) = links.iter().find(|link| link.id == id) {
         if existing.prefix == prefix {
@@ -554,6 +555,7 @@ fn probe_as(prefix: &Path, id: &ToolchainId) -> Result<Option<detect::Detected>>
 pub fn unlink(ctx: &Context, id: &str) -> Result<()> {
     let id: ToolchainId = id.parse()?;
     let store = ctx.store();
+    let _lock = store.lock()?;
     let mut links = store.links()?;
     let Some(index) = links.iter().position(|link| link.id == id) else {
         if store.installed()?.iter().any(|t| t.id == id) {
