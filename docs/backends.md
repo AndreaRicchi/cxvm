@@ -98,3 +98,104 @@ Every release from 19.1.0 on, plus the newest patch release of each major from 1
 has an x86_64 Linux asset: 18.1.8, 17.0.6, 16.0.4, 15.0.6, 14.0.6, 13.0.1, 12.0.1, 11.1.0.
 Older patch releases can be added with the xtask's `--hash-missing` allowlist; each one costs a
 full download to hash.
+
+## GCC: xPack prebuilt archives (M4)
+
+Source: GitHub releases of
+[`xpack-dev-tools/gcc-xpack`](https://github.com/xpack-dev-tools/gcc-xpack/releases), tags
+`v<gcc version>-<build>` (`v13.3.0-2` is the second xPack build of GCC 13.3.0). Data below was
+read from the GitHub releases API on 2026-10-03; archives were unpacked and run on Ubuntu 26.04
+(glibc 2.43, binutils 2.46).
+
+### Coverage
+
+26 releases, 17 GCC versions: 8.5.0, 11.2.0–11.5.0, 12.1.0–12.5.0, 13.2.0–13.4.0,
+14.1.0–14.3.0 and 15.2.0. There is nothing for GCC 9, 10, 7 and older, and nothing for GCC 16
+yet (newest release: 2025-10-14). Those need `cxvm install --from-source` (M5) or `cxvm link`.
+
+The catalog holds every GCC version, from the highest xPack build of each. The build number is
+visible in the asset name and URL only: the id stays `gcc@13.3.0`.
+
+### Asset names and integrity data
+
+| | |
+|---|---|
+| Asset | `xpack-gcc-<gcc version>-<build>-linux-x64.tar.gz` (gzip; 115–172 MB) |
+| Checksum | `<asset>.sha`, in `sha256sum` format, on every release |
+| GitHub asset `digest` | releases uploaded after mid-2025 (12.5.0-1, 13.4.0-1, 14.3.0-1, 15.2.0-1) |
+
+`cargo xtask catalog gcc` takes the sha256 from the `.sha` file and, when GitHub has a digest,
+requires both to agree. Nothing has to be hashed at generation time. There are no signatures or
+attestations.
+
+### Archive layout
+
+One top-level directory, `xpack-gcc-<gcc version>-<build>/`, which cxvm strips. No hard links.
+Checked on 15.2.0-1, 12.1.0-1, 11.3.0-1, 11.2.0-3, 11.2.0-1 and 8.5.0-1:
+
+| | 11.2.0 and later | 8.5.0-1 |
+|---|---|---|
+| Drivers | `bin/gcc`, `bin/g++` (also `c++`, `cpp`, `gfortran`) | same |
+| Target triple (`-dumpmachine`) | `x86_64-pc-linux-gnu` | `x86_64-unknown-linux-gnu` |
+| GCC install dir | `lib/gcc/x86_64-pc-linux-gnu/<version>` | `lib/gcc/x86_64-unknown-linux-gnu/8.5.0` |
+| C++ runtime | `lib64/libstdc++.so.6`, `lib64/libgcc_s.so.1` | same, but no `lib64/libstdc++.so`: `g++` links `libstdc++.a` statically |
+| Installed size | 320–460 MB | 300 MB |
+
+Also in every prefix: a bundled binutils (`bin/ld`, `as`, `ar`, `objdump`, … and the copies GCC
+itself runs in `<triple>/bin/`), `gdb`, `README.md` and `distro-info/`. 15.2.0-1 adds `lib32/`
+(multilib). Because `cxvm env`/`exec` put `bin/` first on `PATH`, these binutils and `gdb`
+shadow the host's while the toolchain is active.
+
+`libexec/` (8.5.0: `bin/`) holds private copies of the libraries the xPack programs themselves
+need, including a second `libstdc++.so.6`; they are found through `RPATH $ORIGIN…` and are not
+what compiled programs link against.
+
+What the drivers answer, which cxvm relies on:
+
+- `gcc -dumpfullversion` prints `x.y.z` (so does `-dumpversion`).
+- `g++ -print-file-name=libstdc++.so.6` prints
+  `<prefix>/bin/../lib/gcc/<triple>/<version>/../../../../lib64/libstdc++.so.6`: absolute but
+  not normalised. cxvm canonicalises it and records the directory.
+- `gcc -print-libgcc-file-name` prints `<prefix>/bin/../lib/gcc/<triple>/<version>/libgcc.a`;
+  its directory is the GCC install dir.
+- The toolchain is relocatable: all of the above follow the prefix when it is moved.
+
+### Host requirements
+
+- The drivers, `cc1plus` and `ld` of 15.2.0-1 need at most `GLIBC_2.27` and nothing else from
+  the host (`ldd` finds every library); those of 11.2.0-1 and 8.5.0-1 need `GLIBC_2.14`.
+- There is no sysroot: programs are built against the host's glibc headers and `crt1.o`
+  (`libc6-dev`, `glibc-devel`). The builds are multiarch-aware (`-print-multiarch` answers
+  `x86_64-linux-gnu`) and search `/usr/include/x86_64-linux-gnu` and
+  `/usr/lib/x86_64-linux-gnu`, so Debian/Ubuntu work.
+- GCC always uses its **bundled** linker, and an old one cannot read a new host's glibc.
+  Ubuntu's glibc is linked with packed relative relocations (`DT_RELR`, section `.relr.dyn`),
+  which binutils understands from 2.38:
+
+  | Build | Bundled binutils | Linking on Ubuntu 26.04 |
+  |---|---|---|
+  | 15.2.0-1 | 2.45 | works |
+  | 12.1.0-1, 11.3.0-1 | 2.38 | works |
+  | 11.2.0-3, 11.2.0-1 | 2.36.1 | fails: `libmvec.so.1: unknown type [0x13] section '.relr.dyn'` |
+  | 8.5.0-1 | 2.34 | fails the same way, C programs included |
+
+  The other builds were not unpacked; by release date, everything after 11.2.0-3 (2022-02)
+  should carry binutils 2.38 or newer (not verified). cxvm installs such a toolchain and warns
+  that the hello-world did not build. Passing `-B/usr/bin` makes GCC use the host's `as` and
+  `ld` instead, which worked for 8.5.0-1 here.
+
+### Runtime libraries
+
+Nothing in an xPack GCC makes the programs it builds find its `libstdc++.so.6`: a plain
+`g++ hello.cpp` on this host records only `NEEDED libstdc++.so.6` and loads
+`/usr/lib/x86_64-linux-gnu/libstdc++.so.6`. That works while the host's libstdc++ is at least
+as new as the toolchain's, and fails with `GLIBCXX_… not found` otherwise. (xPack's own advice
+is `-static-libgcc -static-libstdc++`.)
+
+With `-Wl,-rpath,<prefix>/lib64`, as in the generated `toolchain.cmake`, `ldd` shows
+`libstdc++.so.6` and `libgcc_s.so.1` resolved from the prefix. The bundled `ld` writes the
+path as `DT_RPATH`; Ubuntu's own `ld` (used with `-B/usr/bin`) writes `DT_RUNPATH`. Both cover
+the libraries the program links directly.
+
+cxvm's post-install check builds a C++ hello-world with that rpath, runs it, and checks with
+`ldd` that `libstdc++.so.6`, when the program needs one, is the toolchain's.
