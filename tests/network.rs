@@ -16,7 +16,7 @@ fn installs_runs_and_removes_a_real_clang() {
             .unwrap();
     let cxvm = |args: &[&str]| {
         let mut cmd = s.cxvm("");
-        cmd.env("PATH", &path).args(args);
+        cmd.env("PATH", &path).env_remove("CXVM_CATALOG").args(args);
         cmd
     };
     cxvm(&["install", "clang@11.1.0"])

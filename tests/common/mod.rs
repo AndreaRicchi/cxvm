@@ -18,14 +18,15 @@ pub struct Sandbox {
 }
 
 impl Sandbox {
-    /// Empty store, a project tree `proj/a/b/c`, and a `bin/` on `PATH` holding a fake `cc`
-    /// and `c++`.
+    /// Empty store, a project tree `proj/a/b/c`, a `bin/` on `PATH` holding a fake `cc` and
+    /// `c++`, and an empty catalog.
     pub fn new() -> Self {
         let sandbox = Self {
             dir: tempfile::tempdir().expect("temp dir"),
         };
         fs::create_dir_all(sandbox.project().join("a/b/c")).unwrap();
         fs::create_dir_all(sandbox.path("home")).unwrap();
+        fs::write(sandbox.empty_catalog(), "").unwrap();
         sandbox.fake_compiler(&sandbox.bin(), "cc");
         sandbox.fake_compiler(&sandbox.bin(), "c++");
         sandbox
@@ -45,6 +46,12 @@ impl Sandbox {
 
     pub fn bin(&self) -> PathBuf {
         self.path("bin")
+    }
+
+    /// The catalog `cxvm` gets by default: with the one built into cxvm, a test that installs
+    /// by mistake would download a real release.
+    fn empty_catalog(&self) -> PathBuf {
+        self.path("empty-catalog.toml")
     }
 
     /// Writes an executable script `dir/name` that prints a version line.
@@ -78,7 +85,8 @@ impl Sandbox {
         path
     }
 
-    /// `cxvm` run from `proj/<rel>` with a clean environment pointing into the sandbox.
+    /// `cxvm` run from `proj/<rel>` with a clean environment pointing into the sandbox, and
+    /// nothing to install unless the test sets `CXVM_CATALOG` or removes it.
     pub fn cxvm(&self, rel: &str) -> Command {
         let mut cmd = Command::cargo_bin("cxvm").expect("cxvm binary built by cargo");
         cmd.current_dir(self.project().join(rel))
@@ -86,6 +94,7 @@ impl Sandbox {
             .env("HOME", self.path("home"))
             .env("CXVM_HOME", self.store())
             .env("XDG_CACHE_HOME", self.path("cache"))
+            .env("CXVM_CATALOG", self.empty_catalog())
             .env("PATH", self.bin());
         cmd
     }
@@ -142,35 +151,139 @@ pub fn clang_script(version: &str, compiles: bool) -> String {
     )
 }
 
+fn tar_dir(builder: &mut tar::Builder<Vec<u8>>, path: &str) {
+    let mut header = tar::Header::new_gnu();
+    header.set_entry_type(tar::EntryType::Directory);
+    header.set_mode(0o755);
+    header.set_size(0);
+    builder
+        .append_data(&mut header, path, std::io::empty())
+        .unwrap();
+}
+
+fn tar_file(builder: &mut tar::Builder<Vec<u8>>, path: &str, mode: u32, content: &str) {
+    let mut header = tar::Header::new_gnu();
+    header.set_mode(mode);
+    header.set_size(content.len() as u64);
+    builder
+        .append_data(&mut header, path, content.as_bytes())
+        .unwrap();
+}
+
+fn tar_symlink(builder: &mut tar::Builder<Vec<u8>>, path: &str, target: &str) {
+    let mut header = tar::Header::new_gnu();
+    header.set_entry_type(tar::EntryType::Symlink);
+    header.set_size(0);
+    builder.append_link(&mut header, path, target).unwrap();
+}
+
 /// A `.tar.xz` laid out like an LLVM release: one top-level directory holding `bin/clang` (a
 /// fake reporting `version`, see [`clang_script`]) and a `bin/clang++` symlink to it.
 pub fn fake_clang_archive(version: &str, compiles: bool) -> Vec<u8> {
     let top = format!("LLVM-{version}-Linux-X64");
-    let script = clang_script(version, compiles);
     let mut builder = tar::Builder::new(Vec::new());
-    let mut dir = tar::Header::new_gnu();
-    dir.set_entry_type(tar::EntryType::Directory);
-    dir.set_mode(0o755);
-    dir.set_size(0);
-    builder
-        .append_data(&mut dir, format!("{top}/bin/"), std::io::empty())
-        .unwrap();
-    let mut clang = tar::Header::new_gnu();
-    clang.set_mode(0o755);
-    clang.set_size(script.len() as u64);
-    builder
-        .append_data(&mut clang, format!("{top}/bin/clang"), script.as_bytes())
-        .unwrap();
-    let mut link = tar::Header::new_gnu();
-    link.set_entry_type(tar::EntryType::Symlink);
-    link.set_size(0);
-    builder
-        .append_link(&mut link, format!("{top}/bin/clang++"), "clang")
-        .unwrap();
+    tar_dir(&mut builder, &format!("{top}/bin/"));
+    tar_file(
+        &mut builder,
+        &format!("{top}/bin/clang"),
+        0o755,
+        &clang_script(version, compiles),
+    );
+    tar_symlink(&mut builder, &format!("{top}/bin/clang++"), "clang");
     let tar = builder.into_inner().unwrap();
     let mut xz = liblzma::write::XzEncoder::new(Vec::new(), 1);
     std::io::Write::write_all(&mut xz, &tar).unwrap();
     xz.finish().unwrap()
+}
+
+/// A fake xPack GCC release, see [`FakeGcc::archive`].
+pub struct FakeGcc<'a> {
+    pub version: &'a str,
+    /// Whether the driver "builds" the smoke test's program or fails like a GCC whose linker
+    /// cannot read the host's libraries.
+    pub compiles: bool,
+    /// Whether the archive holds `lib64/libstdc++.so.6`.
+    pub libstdcxx: bool,
+}
+
+impl<'a> FakeGcc<'a> {
+    pub fn new(version: &'a str) -> Self {
+        Self {
+            version,
+            compiles: true,
+            libstdcxx: true,
+        }
+    }
+
+    /// The driver script: it answers the probes like an xPack GCC (paths below `bin/..`, not
+    /// normalised), and with `-o <out>` writes an executable `out` that prints what cxvm's
+    /// smoke test expects.
+    fn script(&self) -> String {
+        let version = self.version;
+        let major = version.split('.').next().unwrap();
+        let compile = if self.compiles {
+            "printf '#!/bin/sh\\necho cxvm-ok\\n' > \"$out\"; /bin/chmod +x \"$out\""
+        } else {
+            "echo \"ld: libm.so.6: unknown type [0x13] section '.relr.dyn'\" >&2; exit 1"
+        };
+        format!(
+            "#!/bin/sh\nprefix=\"${{0%/*}}/..\"\ncase \"$1\" in\n\
+             -dumpfullversion) echo {version} ;;\n\
+             -dumpversion) echo {major} ;;\n\
+             --version) echo \"${{0##*/}} (fake xPack GCC) {version}\" ;;\n\
+             -print-file-name=*) echo \"$prefix/lib64/${{1#-print-file-name=}}\" ;;\n\
+             -print-libgcc-file-name) \
+             echo \"$prefix/lib/gcc/x86_64-pc-linux-gnu/{version}/libgcc.a\" ;;\n\
+             *) out=; prev=\n\
+             for a in \"$@\"; do [ \"$prev\" = -o ] && out=\"$a\"; prev=\"$a\"; done\n\
+             if [ -n \"$out\" ]; then {compile}; else echo \"${{0##*/}} {version} $*\"; fi ;;\n\
+             esac\n"
+        )
+    }
+
+    /// A `.tar.gz` laid out like an xPack GCC release: one top-level directory holding
+    /// `bin/gcc`, `bin/g++`, `lib64/libstdc++.so.6` and `lib/gcc/<triple>/<version>/libgcc.a`.
+    pub fn archive(&self) -> Vec<u8> {
+        let version = self.version;
+        let top = format!("xpack-gcc-{version}-1");
+        let script = self.script();
+        let mut builder = tar::Builder::new(Vec::new());
+        tar_dir(&mut builder, &format!("{top}/bin/"));
+        tar_file(&mut builder, &format!("{top}/bin/gcc"), 0o755, &script);
+        tar_file(&mut builder, &format!("{top}/bin/g++"), 0o755, &script);
+        if self.libstdcxx {
+            tar_file(
+                &mut builder,
+                &format!("{top}/lib64/libstdc++.so.6.0.32"),
+                0o755,
+                "",
+            );
+            tar_symlink(
+                &mut builder,
+                &format!("{top}/lib64/libstdc++.so.6"),
+                "libstdc++.so.6.0.32",
+            );
+        }
+        tar_file(
+            &mut builder,
+            &format!("{top}/lib/gcc/x86_64-pc-linux-gnu/{version}/libgcc.a"),
+            0o644,
+            "",
+        );
+        let tar = builder.into_inner().unwrap();
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        gz.write_all(&tar).unwrap();
+        gz.finish().unwrap()
+    }
+}
+
+/// The archive name a release of `kind` has upstream.
+pub fn asset_name(kind: &str, version: &str) -> String {
+    match kind {
+        "clang" => format!("LLVM-{version}-Linux-X64.tar.xz"),
+        "gcc" => format!("xpack-gcc-{version}-1-linux-x64.tar.gz"),
+        other => panic!("unknown kind {other}"),
+    }
 }
 
 pub fn sha256_hex(bytes: &[u8]) -> String {
@@ -181,14 +294,15 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
         .collect()
 }
 
-/// Writes a catalog file at `path` with one clang entry per `(version, url, archive)`.
-pub fn write_catalog(path: &Path, entries: &[(&str, &str, &[u8])]) {
+/// Writes a catalog file at `path` with one entry per `(kind, version, url, archive)`.
+pub fn write_catalog(path: &Path, entries: &[(&str, &str, &str, &[u8])]) {
     let text: Vec<String> = entries
         .iter()
-        .map(|(version, url, archive)| {
+        .map(|(kind, version, url, archive)| {
             format!(
-                "[[clang]]\nversion = \"{version}\"\nasset = \"LLVM-{version}-Linux-X64.tar.xz\"\n\
+                "[[{kind}]]\nversion = \"{version}\"\nasset = \"{}\"\n\
                  url = \"{url}\"\nsize = {}\nsha256 = \"{}\"\nsource = \"test\"\n",
+                asset_name(kind, version),
                 archive.len(),
                 sha256_hex(archive)
             )

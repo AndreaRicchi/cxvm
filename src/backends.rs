@@ -40,12 +40,58 @@ impl Backend for LlvmPrebuilt {
     }
 }
 
-/// The backend that installs `kind`, if one exists yet.
-pub fn backend_for(kind: Kind) -> Option<&'static dyn Backend> {
-    match kind {
-        Kind::Clang => Some(&LlvmPrebuilt),
-        Kind::Gcc => None,
+/// xPack GCC release archives (see docs/backends.md).
+pub struct XpackGcc;
+
+impl Backend for XpackGcc {
+    fn name(&self) -> &'static str {
+        "xpack-prebuilt"
     }
+
+    fn prepare(&self, _release: &Release, archive: &Path, prefix: &Path) -> Result<(), String> {
+        extract::unpack_archive(archive, prefix)
+    }
+}
+
+/// The backend that installs releases of `kind` from the catalog.
+pub fn backend_for(kind: Kind) -> &'static dyn Backend {
+    match kind {
+        Kind::Clang => &LlvmPrebuilt,
+        Kind::Gcc => &XpackGcc,
+    }
+}
+
+/// Where a GCC staged in `staged` keeps its `libstdc++.so.6` and its install dir
+/// (`lib/gcc/<triple>/<version>`), relative to the prefix. The error is a reason for the user.
+fn gcc_runtime_dirs(
+    staged: &Path,
+    detected: &detect::Detected,
+) -> Result<(PathBuf, PathBuf), String> {
+    let root = staged
+        .canonicalize()
+        .map_err(|e| format!("cannot resolve {}: {e}", staged.display()))?;
+    let inside = |what: &str, dir: Option<PathBuf>, driver: &Path| {
+        let name = driver.file_name().unwrap_or_default().to_string_lossy();
+        let dir = dir.ok_or_else(|| format!("its {name} does not report {what}"))?;
+        dir.strip_prefix(&root).map(Path::to_path_buf).map_err(|_| {
+            format!(
+                "its {name} reports {what} outside the archive, in {}",
+                dir.display()
+            )
+        })
+    };
+    Ok((
+        inside(
+            "a libstdc++.so.6",
+            detect::libstdcxx_dir(&detected.cxx),
+            &detected.cxx,
+        )?,
+        inside(
+            "a libgcc.a",
+            detect::gcc_install_dir(&detected.cc),
+            &detected.cc,
+        )?,
+    ))
 }
 
 /// A finished install.
@@ -62,10 +108,7 @@ pub struct Report {
 /// verified archive stays cached for the next attempt.
 pub fn install(store: &Store, lock: &StoreLock, release: &Release) -> Result<Report> {
     let id = &release.id;
-    let backend = backend_for(id.kind()).ok_or(Error::NotImplemented {
-        command: "install gcc@…",
-        milestone: "M4",
-    })?;
+    let backend = backend_for(id.kind());
     let paths = store.paths();
     let archive = download::fetch(release, &paths.downloads_dir())?;
     let staged = store.staging_path(&format!("{}-{}", id.kind(), id.version()));
@@ -118,7 +161,21 @@ pub fn install(store: &Store, lock: &StoreLock, release: &Release) -> Result<Rep
                 "report it at the cxvm issue tracker: the catalog entry is wrong".into(),
             ));
         }
-        let warning = smoke::compile_and_run(&detected.cxx, &store.staging_path("smoke"));
+        let runtime_dirs = match id.kind() {
+            Kind::Gcc => Some(gcc_runtime_dirs(&staged, &detected).map_err(|reason| {
+                fail(
+                    reason,
+                    "report it at the cxvm issue tracker: cxvm cannot use this GCC build".into(),
+                )
+            })?),
+            Kind::Clang => None,
+        };
+        let rpath = runtime_dirs.as_ref().map(|(lib, _)| staged.join(lib));
+        let warning = smoke::compile_and_run(
+            &detected.cxx,
+            &store.staging_path("smoke"),
+            rpath.as_deref(),
+        );
 
         let target = paths.toolchain_dir(id);
         let (final_cc, final_cxx) = detect::compilers(&target, id.kind());
@@ -131,6 +188,8 @@ pub fn install(store: &Store, lock: &StoreLock, release: &Release) -> Result<Rep
             cc: final_cc.clone(),
             cxx: final_cxx.clone(),
             version: detected.version_line,
+            libstdcxx_dir: runtime_dirs.as_ref().map(|(lib, _)| target.join(lib)),
+            gcc_install_dir: runtime_dirs.as_ref().map(|(_, gcc)| target.join(gcc)),
         }
         .write(&staged)?;
         let path = store.commit(lock, &staged, id)?;

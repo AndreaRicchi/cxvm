@@ -307,6 +307,12 @@ pub struct Meta {
     pub cxx: PathBuf,
     /// First line of `cc --version`.
     pub version: String,
+    /// GCC only: the directory holding its `libstdc++.so.6` (`lib64` or `lib`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub libstdcxx_dir: Option<PathBuf>,
+    /// GCC only: its install dir, `lib/gcc/<triple>/<version>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gcc_install_dir: Option<PathBuf>,
 }
 
 impl Meta {
@@ -634,9 +640,24 @@ mod tests {
             cc: "/s/toolchains/clang/19.1.0/bin/clang".into(),
             cxx: "/s/toolchains/clang/19.1.0/bin/clang++".into(),
             version: "clang version 19.1.0".into(),
+            libstdcxx_dir: None,
+            gcc_install_dir: None,
         };
         meta.write(dir.path()).unwrap();
-        assert_eq!(Meta::load(dir.path()).unwrap(), Some(meta));
+        let text = fs::read_to_string(dir.path().join(META_FILE)).unwrap();
+        assert!(!text.contains("libstdcxx_dir"), "{text}");
+        assert_eq!(Meta::load(dir.path()).unwrap(), Some(meta.clone()));
+
+        let gcc = Meta {
+            id: "gcc@13.3.0".into(),
+            libstdcxx_dir: Some("/s/toolchains/gcc/13.3.0/lib64".into()),
+            gcc_install_dir: Some(
+                "/s/toolchains/gcc/13.3.0/lib/gcc/x86_64-pc-linux-gnu/13.3.0".into(),
+            ),
+            ..meta
+        };
+        gcc.write(dir.path()).unwrap();
+        assert_eq!(Meta::load(dir.path()).unwrap(), Some(gcc));
     }
 
     #[test]

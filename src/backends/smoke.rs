@@ -1,8 +1,8 @@
-//! Post-install checks: can the new compiler run on this host, and can it build and run a
-//! C++ program?
+//! Post-install checks: can the new compiler run on this host, can it build and run a C++
+//! program, and does that program load the toolchain's own libstdc++?
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use crate::files;
@@ -48,9 +48,20 @@ pub fn missing_libraries_hint(libraries: &[String]) -> String {
     hint
 }
 
-/// Builds and runs a C++ hello-world with `cxx` in `scratch` (created, then deleted). `None`
-/// if it printed what it should, else what went wrong.
-pub fn compile_and_run(cxx: &Path, scratch: &Path) -> Option<String> {
+/// The file `ldd` resolves `library` to, if its output lists it with a path.
+fn loaded_library(ldd_output: &str, library: &str) -> Option<PathBuf> {
+    ldd_output.lines().find_map(|line| {
+        let (name, target) = line.trim().split_once(" => ")?;
+        let path = target.rsplit_once(" (").map_or(target, |(path, _)| path);
+        (name == library && path.starts_with('/')).then(|| PathBuf::from(path))
+    })
+}
+
+/// Builds and runs a C++ hello-world with `cxx` in `scratch` (created, then deleted). With
+/// `rpath`, the directory of the toolchain's `libstdc++.so.6`, the program is linked with
+/// `-Wl,-rpath,<rpath>` like the generated `toolchain.cmake` does, and must load its libstdc++
+/// from there. `None` if all went well, else what went wrong.
+pub fn compile_and_run(cxx: &Path, scratch: &Path, rpath: Option<&Path>) -> Option<String> {
     let result = (|| {
         fs::create_dir_all(scratch)
             .map_err(|e| format!("cannot create {}: {e}", scratch.display()))?;
@@ -61,8 +72,13 @@ pub fn compile_and_run(cxx: &Path, scratch: &Path) -> Option<String> {
             "#include <iostream>\nint main() { std::cout << \"cxvm-ok\" << std::endl; }\n",
         )
         .map_err(|e| format!("cannot write {}: {e}", source.display()))?;
-        let compile = run(Command::new(cxx).arg(&source).arg("-o").arg(&program))
-            .map_err(|e| format!("cannot run {}: {e}", cxx.display()))?;
+        let mut command = Command::new(cxx);
+        command.arg(&source).arg("-o").arg(&program);
+        if let Some(rpath) = rpath {
+            command.arg(format!("-Wl,-rpath,{}", rpath.display()));
+        }
+        let compile =
+            run(&mut command).map_err(|e| format!("cannot run {}: {e}", cxx.display()))?;
         if !compile.status.success() {
             return Err(format!(
                 "compiling a hello-world failed:\n{}",
@@ -76,6 +92,19 @@ pub fn compile_and_run(cxx: &Path, scratch: &Path) -> Option<String> {
             return Err(format!(
                 "the compiled hello-world did not run correctly:\n{}",
                 tail(&output.stderr)
+            ));
+        }
+        if let Some(rpath) = rpath
+            && let Ok(ldd) = run(Command::new("ldd").arg(&program))
+            && let Some(loaded) =
+                loaded_library(&String::from_utf8_lossy(&ldd.stdout), "libstdc++.so.6")
+            && loaded.parent().and_then(|dir| dir.canonicalize().ok()) != rpath.canonicalize().ok()
+        {
+            return Err(format!(
+                "the compiled hello-world loads {} instead of the libstdc++.so.6 in {}, \
+                 although it was linked with -Wl,-rpath",
+                loaded.display(),
+                rpath.display()
             ));
         }
         Ok(())
@@ -141,8 +170,42 @@ mod tests {
         .unwrap();
         fs::set_permissions(&cxx, fs::Permissions::from_mode(0o755)).unwrap();
         let scratch = dir.path().join("scratch");
-        let problem = compile_and_run(&cxx, &scratch).unwrap();
+        let problem = compile_and_run(&cxx, &scratch, None).unwrap();
         assert!(problem.contains("iostream not found"), "{problem}");
         assert!(!scratch.exists());
+    }
+
+    #[test]
+    fn passes_the_rpath_to_the_linker() {
+        let dir = tempfile::tempdir().unwrap();
+        let cxx = dir.path().join("g++");
+        fs::write(&cxx, "#!/bin/sh\necho \"args: $*\" >&2\nexit 1\n").unwrap();
+        fs::set_permissions(&cxx, fs::Permissions::from_mode(0o755)).unwrap();
+        let scratch = dir.path().join("scratch");
+        let problem = compile_and_run(&cxx, &scratch, Some(Path::new("/p/lib64"))).unwrap();
+        assert!(problem.contains("-Wl,-rpath,/p/lib64"), "{problem}");
+        let problem = compile_and_run(&cxx, &scratch, None).unwrap();
+        assert!(!problem.contains("-rpath"), "{problem}");
+    }
+
+    #[test]
+    fn finds_the_library_a_program_loads() {
+        let output = "\tlinux-vdso.so.1 (0x00007ffd)\n\
+                      \tlibstdc++.so.6 => /s/gcc/15.2.0/lib64/libstdc++.so.6 (0x000071bc4bbd3000)\n\
+                      \tlibm.so.6 => /lib/x86_64-linux-gnu/libm.so.6 (0x00007f)\n\
+                      \t/lib64/ld-linux-x86-64.so.2 (0x00007f)\n";
+        assert_eq!(
+            loaded_library(output, "libstdc++.so.6"),
+            Some(PathBuf::from("/s/gcc/15.2.0/lib64/libstdc++.so.6"))
+        );
+        assert_eq!(loaded_library(output, "libgcc_s.so.1"), None);
+        assert_eq!(
+            loaded_library("\tlibstdc++.so.6 => not found\n", "libstdc++.so.6"),
+            None
+        );
+        assert_eq!(
+            loaded_library("\tnot a dynamic executable\n", "libstdc++.so.6"),
+            None
+        );
     }
 }

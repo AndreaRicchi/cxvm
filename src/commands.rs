@@ -467,9 +467,7 @@ pub fn install_pinned(ctx: &Context) -> Result<()> {
         Err(err @ Error::NotInstalled { .. }) => {
             let catalog = ctx.catalog()?;
             let installable = match &spec {
-                Spec::Toolchain { kind, version } => {
-                    version.suffix().is_none() && backends::backend_for(*kind).is_some()
-                }
+                Spec::Toolchain { version, .. } => version.suffix().is_none(),
                 Spec::System => false,
             };
             match catalog.resolve(&spec).filter(|_| installable) {
@@ -509,12 +507,6 @@ pub fn install(ctx: &Context, id: &str, from_source: bool) -> Result<()> {
         return Err(Error::NotImplemented {
             command: "install --from-source",
             milestone: "M5",
-        });
-    }
-    if backends::backend_for(*kind).is_none() {
-        return Err(Error::NotImplemented {
-            command: "install gcc@…",
-            milestone: "M4",
         });
     }
     let catalog = ctx.catalog()?;
@@ -579,13 +571,26 @@ fn install_release(ctx: &Context, release: &Release) -> Result<Installed> {
     drop(lock);
     let toolchain = report.toolchain;
     if let Some(problem) = report.warning {
+        let hint = match toolchain.id.kind() {
+            Kind::Clang => {
+                "clang builds C++ with the newest GCC installation it finds on the host. \
+                 Either there is none (install g++ or your distribution's libstdc++ development \
+                 package), or its libstdc++ is too new for this clang: pass an older one with \
+                 `--gcc-install-dir=/usr/lib/gcc/x86_64-linux-gnu/<version>` (clang 16 and \
+                 later). Pinning that GCC in .cxvmrc arrives in M6"
+            }
+            Kind::Gcc => {
+                "this GCC builds against the host's C library. Either its headers are missing \
+                 (install `libc6-dev` on Debian/Ubuntu, `glibc-devel` on Fedora/RHEL), or the \
+                 linker bundled with this build is too old for the host's libraries (its \
+                 errors mention `.relr.dyn`): pass `-B/usr/bin` to use the host's linker, or \
+                 install a newer release of the same major (`cxvm list --available`). See \
+                 docs/backends.md"
+            }
+        };
         eprintln!(
             "warning: {} is installed, but cannot build and run a C++ program here: {problem}\n  \
-             hint: clang builds C++ with the newest GCC installation it finds on the host. \
-             Either there is none (install g++ or your distribution's libstdc++ development \
-             package), or its libstdc++ is too new for this clang: pass an older one with \
-             `--gcc-install-dir=/usr/lib/gcc/x86_64-linux-gnu/<version>` (clang 16 and later). \
-             Pinning that GCC in .cxvmrc arrives in M6",
+             hint: {hint}",
             toolchain.id
         );
     }

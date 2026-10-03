@@ -1,5 +1,6 @@
 //! Probing a toolchain prefix: which compiler it holds, its exact version, and where its C++
-//! runtime library lives. Used by `cxvm link` and when generating project files (M2).
+//! runtime library and GCC install dir live. Used by `cxvm link`, when generating project files
+//! (M2) and when installing (M3, M4).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -138,6 +139,17 @@ pub fn libstdcxx_dir(cxx: &Path) -> Option<PathBuf> {
     path.canonicalize().ok()?.parent().map(Path::to_path_buf)
 }
 
+/// GCC's install dir (`<prefix>/lib/gcc/<triple>/<version>`): the directory of the `libgcc.a`
+/// that `cc` links, from `cc -print-libgcc-file-name`; `None` if the driver does not know one.
+pub fn gcc_install_dir(cc: &Path) -> Option<PathBuf> {
+    let output = capture(cc, "-print-libgcc-file-name")?;
+    let path = PathBuf::from(output.trim());
+    if !path.is_absolute() {
+        return None;
+    }
+    path.canonicalize().ok()?.parent().map(Path::to_path_buf)
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -199,6 +211,9 @@ mod tests {
                  -print-file-name=*) f=\"${{1#-print-file-name=}}\"; \
                  d=\"${{0%/*}}/../lib64\"; \
                  if [ -e \"$d/$f\" ]; then echo \"$d/$f\"; else echo \"$f\"; fi ;;\n\
+                 -print-libgcc-file-name) \
+                 d=\"${{0%/*}}/../lib/gcc/x86_64-pc-linux-gnu/{version}\"; \
+                 if [ -e \"$d/libgcc.a\" ]; then echo \"$d/libgcc.a\"; else echo libgcc.a; fi ;;\n\
                  esac\n",
                 major = version.split('.').next().unwrap()
             ),
@@ -314,5 +329,21 @@ mod tests {
         fs::write(lib64.join("libstdc++.so.6"), "").unwrap();
         assert_eq!(libstdcxx_dir(&cxx), Some(lib64.canonicalize().unwrap()));
         assert_eq!(libstdcxx_dir(&dir.path().join("bin/missing")), None);
+    }
+
+    #[test]
+    fn finds_the_gcc_install_dir_the_driver_reports() {
+        let dir = tempfile::tempdir().unwrap();
+        fake(dir.path(), "gcc", Kind::Gcc, "13.3.0");
+        let cc = dir.path().join("bin/gcc");
+        assert_eq!(gcc_install_dir(&cc), None, "driver prints the bare name");
+        let install_dir = dir.path().join("lib/gcc/x86_64-pc-linux-gnu/13.3.0");
+        fs::create_dir_all(&install_dir).unwrap();
+        fs::write(install_dir.join("libgcc.a"), "").unwrap();
+        assert_eq!(
+            gcc_install_dir(&cc),
+            Some(install_dir.canonicalize().unwrap())
+        );
+        assert_eq!(gcc_install_dir(&dir.path().join("bin/missing")), None);
     }
 }

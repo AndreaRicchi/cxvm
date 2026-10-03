@@ -7,11 +7,11 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
-use common::{Sandbox, Server, fake_clang_archive, stdout, write_catalog};
+use common::{FakeGcc, Sandbox, Server, asset_name, fake_clang_archive, stdout, write_catalog};
 use predicates::prelude::*;
 
-/// A sandbox whose catalog (`catalog.toml`, passed as `CXVM_CATALOG`) lists `versions`, each
-/// served as a working fake LLVM archive.
+/// A sandbox whose catalog (`catalog.toml`, passed as `CXVM_CATALOG`) lists fake release
+/// archives served by a local HTTP server.
 struct Fixture {
     sandbox: Sandbox,
     server: Server,
@@ -19,26 +19,37 @@ struct Fixture {
 }
 
 impl Fixture {
+    /// Working fake LLVM archives for the clang `versions`.
     fn new(versions: &[&str]) -> Self {
-        let archives: Vec<(&str, Vec<u8>)> = versions
+        let archives: Vec<(&str, &str, Vec<u8>)> = versions
             .iter()
-            .map(|v| (*v, fake_clang_archive(v, true)))
+            .map(|v| ("clang", *v, fake_clang_archive(v, true)))
             .collect();
         Self::with_archives(&archives)
     }
 
-    fn with_archives(archives: &[(&str, Vec<u8>)]) -> Self {
+    /// Working fake xPack archives for the GCC `versions`.
+    fn gcc(versions: &[&str]) -> Self {
+        let archives: Vec<(&str, &str, Vec<u8>)> = versions
+            .iter()
+            .map(|v| ("gcc", *v, FakeGcc::new(v).archive()))
+            .collect();
+        Self::with_archives(&archives)
+    }
+
+    /// One release per `(kind, version, archive)`.
+    fn with_archives(archives: &[(&str, &str, Vec<u8>)]) -> Self {
         let sandbox = Sandbox::new();
         let server = Server::start();
         let catalog = sandbox.path("catalog.toml");
         let urls: Vec<String> = archives
             .iter()
-            .map(|(v, archive)| server.add(&format!("LLVM-{v}-Linux-X64.tar.xz"), archive.clone()))
+            .map(|(kind, v, archive)| server.add(&asset_name(kind, v), archive.clone()))
             .collect();
-        let entries: Vec<(&str, &str, &[u8])> = archives
+        let entries: Vec<(&str, &str, &str, &[u8])> = archives
             .iter()
             .zip(&urls)
-            .map(|((v, archive), url)| (*v, url.as_str(), archive.as_slice()))
+            .map(|((kind, v, archive), url)| (*kind, *v, url.as_str(), archive.as_slice()))
             .collect();
         write_catalog(&catalog, &entries);
         Self {
@@ -56,6 +67,17 @@ impl Fixture {
 
     fn toolchain(&self, version: &str) -> PathBuf {
         self.sandbox.store().join("toolchains/clang").join(version)
+    }
+
+    fn gcc_toolchain(&self, version: &str) -> PathBuf {
+        self.sandbox.store().join("toolchains/gcc").join(version)
+    }
+
+    /// Puts a fake `ldd` printing `output` on the sandbox's `PATH`.
+    fn fake_ldd(&self, output: &str) {
+        let ldd = self.sandbox.bin().join("ldd");
+        fs::write(&ldd, format!("#!/bin/sh\nprintf '{output}'\n")).unwrap();
+        fs::set_permissions(&ldd, fs::Permissions::from_mode(0o755)).unwrap();
     }
 
     fn downloads(&self) -> PathBuf {
@@ -222,7 +244,7 @@ fn leftovers_of_an_interrupted_install_are_cleaned_up() {
 
 #[test]
 fn a_compiler_that_cannot_build_cxx_is_installed_with_a_warning() {
-    let f = Fixture::with_archives(&[("19.1.0", fake_clang_archive("19.1.0", false))]);
+    let f = Fixture::with_archives(&[("clang", "19.1.0", fake_clang_archive("19.1.0", false))]);
     f.cxvm("")
         .args(["install", "clang@19.1.0"])
         .assert()
@@ -239,13 +261,7 @@ fn a_compiler_that_cannot_build_cxx_is_installed_with_a_warning() {
 #[test]
 fn missing_shared_libraries_abort_the_install() {
     let f = Fixture::new(&["18.1.8"]);
-    let ldd = f.sandbox.bin().join("ldd");
-    fs::write(
-        &ldd,
-        "#!/bin/sh\nprintf '\\tlibtinfo.so.5 => not found\\n\\tlibc.so.6 => /lib/libc.so.6\\n'\n",
-    )
-    .unwrap();
-    fs::set_permissions(&ldd, fs::Permissions::from_mode(0o755)).unwrap();
+    f.fake_ldd("\\tlibtinfo.so.5 => not found\\n\\tlibc.so.6 => /lib/libc.so.6\\n");
     f.cxvm("")
         .args(["install", "clang@18.1.8"])
         .assert()
@@ -262,7 +278,7 @@ fn missing_shared_libraries_abort_the_install() {
 
 #[test]
 fn an_archive_holding_another_version_is_refused() {
-    let f = Fixture::with_archives(&[("19.1.0", fake_clang_archive("19.1.1", true))]);
+    let f = Fixture::with_archives(&[("clang", "19.1.0", fake_clang_archive("19.1.1", true))]);
     f.cxvm("")
         .args(["install", "clang@19.1.0"])
         .assert()
@@ -294,9 +310,8 @@ fn unknown_releases_list_what_the_major_offers() {
 fn refuses_what_it_cannot_install() {
     let f = Fixture::new(&["19.1.0"]);
     for (args, expected) in [
-        (&["install", "gcc@13.3.0"][..], "planned for milestone M4"),
         (
-            &["install", "clang@19.1.0", "--from-source"],
+            &["install", "clang@19.1.0", "--from-source"][..],
             "planned for milestone M5",
         ),
         (&["install", "--from-source"], "planned for milestone M5"),
@@ -350,4 +365,139 @@ fn install_without_an_id_still_fails_for_what_the_catalog_lacks() {
         .assert()
         .code(1)
         .stderr(predicate::str::contains("clang@17.0.6 is not installed"));
+}
+
+#[test]
+fn installs_a_gcc_release_and_records_its_runtime_dirs() {
+    let f = Fixture::gcc(&["13.2.0", "13.3.0"]);
+    let out = f.cxvm("").args(["install", "gcc@13"]).output().unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    assert!(!stderr.contains("warning"), "{stderr}");
+    let text = stdout(&out);
+    assert!(text.contains("Resolved gcc@13 to gcc@13.3.0"), "{text}");
+    assert!(text.contains("Installed gcc@13.3.0 in"), "{text}");
+
+    let prefix = f.gcc_toolchain("13.3.0");
+    assert!(prefix.join("bin/g++").is_file());
+    assert!(!prefix.join("xpack-gcc-13.3.0-1").exists());
+    let meta = fs::read_to_string(prefix.join(".cxvm-meta.toml")).unwrap();
+    for line in [
+        "id = \"gcc@13.3.0\"".to_owned(),
+        "backend = \"xpack-prebuilt\"".to_owned(),
+        "version = \"gcc (fake xPack GCC) 13.3.0\"".to_owned(),
+        format!("cxx = \"{}\"", prefix.join("bin/g++").display()),
+        format!("libstdcxx_dir = \"{}\"", prefix.join("lib64").display()),
+        format!(
+            "gcc_install_dir = \"{}\"",
+            prefix.join("lib/gcc/x86_64-pc-linux-gnu/13.3.0").display()
+        ),
+    ] {
+        assert!(meta.contains(&line), "{line} not in:\n{meta}");
+    }
+    assert!(!meta.contains("staging"), "{meta}");
+    assert!(
+        f.downloads()
+            .join("xpack-gcc-13.3.0-1-linux-x64.tar.gz")
+            .is_file()
+    );
+    assert!(f.staging_is_empty());
+
+    f.cxvm("").args(["use", "gcc@13"]).assert().success();
+    let cmake = fs::read_to_string(f.sandbox.project().join(".cxvm/toolchain.cmake")).unwrap();
+    let rpath = format!(
+        "\"-Wl,-rpath,{}\"",
+        prefix.join("lib64").canonicalize().unwrap().display()
+    );
+    assert!(cmake.contains(&rpath), "{rpath} not in:\n{cmake}");
+}
+
+#[test]
+fn install_without_an_id_downloads_a_pinned_gcc() {
+    let f = Fixture::gcc(&["13.3.0"]);
+    f.sandbox.pin("", "gcc@13.3.0");
+    f.cxvm("a")
+        .arg("install")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Installed gcc@13.3.0"));
+    assert_eq!(
+        fs::read_link(f.sandbox.project().join(".cxvm/current")).unwrap(),
+        f.gcc_toolchain("13.3.0")
+    );
+}
+
+#[test]
+fn a_gcc_that_cannot_link_is_installed_with_a_warning() {
+    let gcc = FakeGcc {
+        compiles: false,
+        ..FakeGcc::new("11.2.0")
+    };
+    let f = Fixture::with_archives(&[("gcc", "11.2.0", gcc.archive())]);
+    f.cxvm("")
+        .args(["install", "gcc@11.2.0"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "cannot build and run a C++ program",
+        ))
+        .stderr(predicate::str::contains(".relr.dyn"))
+        .stderr(predicate::str::contains("libc6-dev"))
+        .stderr(predicate::str::contains("-B/usr/bin"));
+    assert!(f.gcc_toolchain("11.2.0").is_dir());
+    assert!(f.staging_is_empty());
+}
+
+#[test]
+fn a_program_loading_another_libstdcxx_is_reported() {
+    let f = Fixture::gcc(&["13.3.0"]);
+    f.fake_ldd(
+        "\\tlibstdc++.so.6 => /usr/lib/x86_64-linux-gnu/libstdc++.so.6 (0x00007f0000000000)\\n",
+    );
+    f.cxvm("")
+        .args(["install", "gcc@13.3.0"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "loads /usr/lib/x86_64-linux-gnu/libstdc++.so.6 instead of the libstdc++.so.6 in",
+        ));
+    assert!(f.gcc_toolchain("13.3.0").is_dir());
+}
+
+#[test]
+fn a_gcc_without_its_own_libstdcxx_is_refused() {
+    let gcc = FakeGcc {
+        libstdcxx: false,
+        ..FakeGcc::new("13.3.0")
+    };
+    let f = Fixture::with_archives(&[("gcc", "13.3.0", gcc.archive())]);
+    f.cxvm("")
+        .args(["install", "gcc@13.3.0"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "its g++ does not report a libstdc++.so.6",
+        ))
+        .stderr(predicate::str::contains("hint:"));
+    assert!(!f.gcc_toolchain("13.3.0").exists());
+    assert!(f.staging_is_empty());
+}
+
+#[test]
+fn both_kinds_install_from_one_catalog() {
+    let f = Fixture::with_archives(&[
+        ("clang", "19.1.0", fake_clang_archive("19.1.0", true)),
+        ("gcc", "13.3.0", FakeGcc::new("13.3.0").archive()),
+    ]);
+    let out = f.cxvm("").args(["list", "--available"]).output().unwrap();
+    let text = stdout(&out);
+    assert!(text.contains("gcc@13.3.0"), "{text}");
+    assert!(text.contains("clang@19.1.0"), "{text}");
+    for id in ["gcc@13.3.0", "clang@19.1.0"] {
+        f.cxvm("").args(["install", id]).assert().success();
+    }
+    let out = f.cxvm("").arg("list").output().unwrap();
+    let text = stdout(&out);
+    assert!(text.contains("gcc@13.3.0"), "{text}");
+    assert!(text.contains("clang@19.1.0"), "{text}");
 }

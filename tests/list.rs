@@ -232,9 +232,11 @@ fn available_uses_the_embedded_catalog_by_default() {
     let s = Sandbox::new();
     s.cxvm("")
         .args(["list", "--available"])
+        .env_remove("CXVM_CATALOG")
         .assert()
         .success()
         .stdout(predicate::str::contains("built into cxvm"))
+        .stdout(predicate::str::contains("gcc@15.2.0"))
         .stdout(predicate::str::contains("clang@19.1.0"))
         .stdout(predicate::str::contains("clang@11.1.0"));
 }
