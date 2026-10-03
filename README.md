@@ -7,7 +7,8 @@ directory, a committed `.cxvmrc` that pins an exact version per project, and a g
 root, no wrapping of compiler calls: generated files point at real paths, so builds keep working
 even when `cxvm` is not on `PATH`.
 
-**Status: pre-alpha.** The command-line surface exists but nothing is implemented yet. The
+**Status: pre-alpha.** Pinning per project, linking compilers you already have, and installing
+official prebuilt Clang releases (`cxvm install clang@19`) work; GCC installs come next. The
 specification and milestone plan live in [PLAN.md](PLAN.md).
 
 ## Building
