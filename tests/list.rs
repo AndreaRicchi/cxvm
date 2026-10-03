@@ -192,14 +192,16 @@ fn available_lists_the_catalog_newest_first_marking_installed() {
         .unwrap();
     assert!(out.status.success());
     let text = stdout(&out);
-    let lines: Vec<&str> = text.lines().map(str::trim_end).collect();
+    let lines: Vec<&str> = text.lines().collect();
+    assert!(lines[0].contains("(* = installed)"), "{text}");
     assert!(lines[0].contains("CXVM_CATALOG"), "{text}");
     assert_eq!(
         lines[1..],
         [
-            "  clang@19.1.7    1.5 GiB",
-            "  clang@19.1.0    1.5 GiB  installed",
-            "  clang@18.1.8    1.5 GiB",
+            "",
+            "  clang  download  versions",
+            "  19      1.5 GiB  19.1.7  19.1.0*",
+            "  18      1.5 GiB  18.1.8",
         ]
     );
 }
@@ -236,9 +238,11 @@ fn available_uses_the_embedded_catalog_by_default() {
         .assert()
         .success()
         .stdout(predicate::str::contains("built into cxvm"))
-        .stdout(predicate::str::contains("gcc@15.2.0"))
-        .stdout(predicate::str::contains("clang@19.1.0"))
-        .stdout(predicate::str::contains("clang@11.1.0"));
+        .stdout(predicate::str::contains("  gcc  "))
+        .stdout(predicate::str::contains("15.2.0"))
+        .stdout(predicate::str::contains("  clang  "))
+        .stdout(predicate::str::contains("19.1.0"))
+        .stdout(predicate::str::contains("11.1.0"));
 }
 
 #[test]

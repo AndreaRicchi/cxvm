@@ -491,8 +491,10 @@ fn both_kinds_install_from_one_catalog() {
     ]);
     let out = f.cxvm("").args(["list", "--available"]).output().unwrap();
     let text = stdout(&out);
-    assert!(text.contains("gcc@13.3.0"), "{text}");
-    assert!(text.contains("clang@19.1.0"), "{text}");
+    assert!(text.contains("  gcc  "), "{text}");
+    assert!(text.contains("13.3.0"), "{text}");
+    assert!(text.contains("  clang  "), "{text}");
+    assert!(text.contains("19.1.0"), "{text}");
     for id in ["gcc@13.3.0", "clang@19.1.0"] {
         f.cxvm("").args(["install", id]).assert().success();
     }

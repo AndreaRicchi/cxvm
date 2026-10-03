@@ -178,39 +178,118 @@ struct AvailableEntry {
     url: String,
 }
 
-/// `cxvm list --available`: the releases cxvm can install, newest first per kind.
+/// `cxvm list --available`: the releases cxvm can install, as a table with one row per major
+/// (see [`render_available`]), or with `json` every release, newest first per kind.
 pub fn list_available(ctx: &Context, json: bool) -> Result<()> {
     let catalog = ctx.catalog()?;
     let installed = ctx.store().installed()?;
-    let mut releases: Vec<_> = catalog.releases().iter().collect();
-    releases.sort_by(|a, b| a.id.kind().cmp(&b.id.kind()).then(b.id.cmp(&a.id)));
-    let entries: Vec<AvailableEntry> = releases
-        .into_iter()
-        .map(|release| AvailableEntry {
-            id: release.id.to_string(),
-            size: release.size,
-            installed: installed.iter().any(|t| t.id == release.id),
-            url: release.url.clone(),
-        })
-        .collect();
+    let is_installed = |id: &ToolchainId| installed.iter().any(|t| &t.id == id);
 
     if json {
+        let mut releases: Vec<_> = catalog.releases().iter().collect();
+        releases.sort_by(|a, b| a.id.kind().cmp(&b.id.kind()).then(b.id.cmp(&a.id)));
+        let entries: Vec<AvailableEntry> = releases
+            .into_iter()
+            .map(|release| AvailableEntry {
+                id: release.id.to_string(),
+                size: release.size,
+                installed: is_installed(&release.id),
+                url: release.url.clone(),
+            })
+            .collect();
         let text = serde_json::to_string_pretty(&entries).expect("entries serialize");
         println!("{text}");
         return Ok(());
     }
-    println!("Installable toolchains, from {}:", catalog.origin());
-    let width = entries.iter().map(|e| e.id.len()).max().unwrap_or(0);
-    for entry in &entries {
-        let line = format!(
-            "  {:<width$}  {:>9}  {}",
-            entry.id,
-            human_size(entry.size),
-            if entry.installed { "installed" } else { "" }
-        );
-        println!("{}", line.trim_end());
-    }
+    print!(
+        "{}",
+        render_available(catalog.releases(), is_installed, &catalog.origin())
+    );
     Ok(())
+}
+
+/// Columns a line of the `list --available` table may fill. Fixed rather than read from the
+/// terminal, so the output is the same in a pipe.
+const AVAILABLE_WIDTH: usize = 80;
+
+/// A major and its releases, newest first: one row of the `list --available` table.
+type MajorRow<'a> = (u32, Vec<&'a Release>);
+
+/// The table of `cxvm list --available`: per kind, one row per major holding its versions,
+/// newest first, wrapped at [`AVAILABLE_WIDTH`]. `*` marks the installed ones; `download` is
+/// the archive size of the row's newest version.
+fn render_available(
+    releases: &[Release],
+    is_installed: impl Fn(&ToolchainId) -> bool,
+    origin: &str,
+) -> String {
+    let mut out = format!("Installable toolchains (* = installed), from {origin}:\n");
+    let mut tables: Vec<(Kind, Vec<MajorRow>)> = Vec::new();
+    for kind in Kind::ALL {
+        let mut of_kind: Vec<&Release> = releases.iter().filter(|r| r.id.kind() == kind).collect();
+        of_kind.sort_by(|a, b| b.id.cmp(&a.id));
+        let mut rows: Vec<MajorRow> = Vec::new();
+        for release in of_kind {
+            let major = release.id.version().major();
+            match rows.last_mut() {
+                Some((last, versions)) if *last == major => versions.push(release),
+                _ => rows.push((major, vec![release])),
+            }
+        }
+        if !rows.is_empty() {
+            tables.push((kind, rows));
+        }
+    }
+    if tables.is_empty() {
+        return out;
+    }
+
+    let rows = || tables.iter().flat_map(|(_, rows)| rows);
+    let first = Kind::ALL
+        .map(|kind| kind.as_str().len())
+        .into_iter()
+        .max()
+        .unwrap_or(0);
+    let size = rows()
+        .map(|(_, versions)| human_size(versions[0].size).len())
+        .max()
+        .unwrap_or(0)
+        .max("download".len());
+    // One more than the longest version, for the `*`.
+    let cell = rows()
+        .flat_map(|(_, versions)| versions)
+        .map(|release| release.id.version().to_string().len() + 1)
+        .max()
+        .unwrap_or(0);
+    let indent = 2 + first + 2 + size + 2;
+    let per_line = (AVAILABLE_WIDTH.saturating_sub(indent) + 1) / (cell + 1);
+
+    for (kind, rows) in &tables {
+        out.push_str(&format!(
+            "\n  {:<first$}  {:>size$}  versions\n",
+            kind.as_str(),
+            "download"
+        ));
+        for (major, versions) in rows {
+            let cells: Vec<String> = versions
+                .iter()
+                .map(|release| {
+                    let mark = if is_installed(&release.id) { "*" } else { "" };
+                    format!("{:<cell$}", format!("{}{mark}", release.id.version()))
+                })
+                .collect();
+            let mut start = format!(
+                "  {major:<first$}  {:>size$}  ",
+                human_size(versions[0].size)
+            );
+            for line in cells.chunks(per_line.max(1)) {
+                out.push_str(format!("{start}{}", line.join(" ")).trim_end());
+                out.push('\n');
+                start = " ".repeat(indent);
+            }
+        }
+    }
+    out
 }
 
 /// `1.8 GiB`, `950 MiB`: download sizes for humans.
@@ -511,13 +590,10 @@ pub fn install(ctx: &Context, id: &str, from_source: bool) -> Result<()> {
     }
     let catalog = ctx.catalog()?;
     let Some(release) = catalog.resolve(&spec) else {
-        let major = version.to_string();
-        let major = major.split('.').next().unwrap_or_default();
         let same_major: Vec<String> = catalog
             .releases()
             .iter()
-            .filter(|r| r.id.kind() == *kind)
-            .filter(|r| r.id.version().to_string().split('.').next() == Some(major))
+            .filter(|r| r.id.kind() == *kind && r.id.version().major() == version.major())
             .map(|r| r.id.to_string())
             .collect();
         let hint = if same_major.is_empty() {
@@ -962,4 +1038,75 @@ pub fn exec(ctx: &Context, cmd: &[String]) -> Result<()> {
         message: format!("cannot run `{program}`: {err}"),
         hint: "check the command name; the toolchain's bin directory is searched first".into(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn release(id: &str, size: u64) -> Release {
+        Release {
+            id: id.parse().unwrap(),
+            asset: "a.tar.xz".into(),
+            url: "https://example.invalid/a.tar.xz".into(),
+            size,
+            sha256: "0".repeat(64),
+            source: "test".into(),
+        }
+    }
+
+    const MIB: u64 = 1 << 20;
+
+    #[test]
+    fn available_is_a_table_per_kind_with_a_row_per_major() {
+        let releases = [
+            release("clang@18.1.8", 997 * MIB),
+            release("clang@19.1.0", 1536 * MIB),
+            release("clang@19.1.7", 1638 * MIB),
+            release("gcc@8.5.0", 111 * MIB),
+            release("gcc@13.3.0", 140 * MIB),
+            release("gcc@13.4.0", 139 * MIB),
+        ];
+        let installed: ToolchainId = "gcc@13.3.0".parse().unwrap();
+        let text = render_available(&releases, |id| *id == installed, "the catalog");
+        assert_eq!(
+            text,
+            "Installable toolchains (* = installed), from the catalog:\n\
+             \n\
+             \x20 gcc    download  versions\n\
+             \x20 13      139 MiB  13.4.0  13.3.0*\n\
+             \x20 8       111 MiB  8.5.0\n\
+             \n\
+             \x20 clang  download  versions\n\
+             \x20 19      1.6 GiB  19.1.7  19.1.0\n\
+             \x20 18      997 MiB  18.1.8\n"
+        );
+    }
+
+    #[test]
+    fn available_wraps_long_rows_under_the_versions_column() {
+        let releases: Vec<Release> = (0..=8)
+            .map(|patch| release(&format!("clang@22.1.{patch}"), 1900 * MIB))
+            .collect();
+        let text = render_available(&releases, |_| false, "the catalog");
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(
+            lines[2..5],
+            [
+                "  clang  download  versions",
+                "  22      1.9 GiB  22.1.8  22.1.7  22.1.6  22.1.5  22.1.4  22.1.3  22.1.2",
+                "                   22.1.1  22.1.0",
+            ]
+        );
+        assert!(lines.iter().all(|line| line.len() <= AVAILABLE_WIDTH));
+        assert!(lines.iter().all(|line| *line == line.trim_end()));
+    }
+
+    #[test]
+    fn available_without_releases_is_the_heading_only() {
+        assert_eq!(
+            render_available(&[], |_| false, "/c.toml (CXVM_CATALOG)"),
+            "Installable toolchains (* = installed), from /c.toml (CXVM_CATALOG):\n"
+        );
+    }
 }

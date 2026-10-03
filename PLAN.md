@@ -74,6 +74,7 @@ _(Append dated one-line entries: what was decided and why.)_
 - 2026-10-03: Severity as in M3: a hello-world that does not build, run or load the right libstdc++ only warns. That is what happens with xPack builds bundling binutils older than 2.38 (11.2.0, 8.5.0) on hosts whose glibc uses `DT_RELR` (Ubuntu 26.04); `-B/usr/bin` works around it. See docs/backends.md.
 - 2026-10-03: The toolchain file also sets `CMAKE_MODULE_LINKER_FLAGS_INIT` (§4 updated), and gets no rpath when libstdc++ is in a default loader directory, as for a linked distro GCC (closes the 2026-09-30 note).
 - 2026-10-03: The test sandbox passes an empty `CXVM_CATALOG` by default: with GCC in the embedded catalog, a test pinning `gcc@13.3.0` downloaded the real release.
+- 2026-10-03: `list --available` prints a table per kind with one row per major (versions newest first, `*` on installed ones, `download` = archive size of the row's newest version), wrapped at a fixed 80 columns; 28 lines instead of 64. `--json` still lists every release.
 
 ---
 

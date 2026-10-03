@@ -60,6 +60,11 @@ pub struct Version {
 }
 
 impl Version {
+    /// The first numeric component: 13 for `13.3.0`.
+    pub fn major(&self) -> u32 {
+        self.numbers[0]
+    }
+
     /// The part after `-`, e.g. `local` in `11.4.0-local`.
     pub fn suffix(&self) -> Option<&str> {
         self.suffix.as_deref()
