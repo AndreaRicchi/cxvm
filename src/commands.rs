@@ -597,6 +597,85 @@ fn install_release(ctx: &Context, release: &Release) -> Result<Installed> {
     Ok(toolchain)
 }
 
+/// `cxvm remove`: delete a toolchain cxvm installed. Refuses the global default unless
+/// `force`, and warns when the current directory still pins it.
+pub fn remove(ctx: &Context, id: &str, force: bool) -> Result<()> {
+    let id: ToolchainId = id.parse()?;
+    let store = ctx.store();
+    let lock = store.lock()?;
+    let installed = store.installed()?;
+    let Some(toolchain) = installed.iter().find(|t| t.id == id) else {
+        let same_kind: Vec<String> = installed
+            .iter()
+            .filter(|t| t.id.kind() == id.kind())
+            .map(|t| t.id.to_string())
+            .collect();
+        return Err(Error::Usage {
+            message: format!("{id} is not installed"),
+            hint: if same_kind.is_empty() {
+                "`cxvm list` shows the installed toolchains".into()
+            } else {
+                format!("installed: {}", same_kind.join(", "))
+            },
+        });
+    };
+    if toolchain.linked {
+        return Err(Error::Usage {
+            message: format!(
+                "{id} is linked to {}, not installed by cxvm",
+                toolchain.path.display()
+            ),
+            hint: format!("unregister it with `cxvm unlink {id}`; its files are left alone"),
+        });
+    }
+
+    // Whether `spec` uses `id` now and nothing once it is gone.
+    let others: Vec<&ToolchainId> = installed
+        .iter()
+        .map(|t| &t.id)
+        .filter(|t| **t != id)
+        .collect();
+    let loses = |spec: &Spec| {
+        spec.select(installed.iter().map(|t| &t.id)) == Some(&id)
+            && spec.select(others.iter().copied()).is_none()
+    };
+    let config_file = ctx.paths.config_file();
+    let global = Config::load(&config_file)?
+        .compiler
+        .filter(|spec| loses(spec));
+    if let Some(spec) = &global
+        && !force
+    {
+        return Err(Error::Usage {
+            message: format!(
+                "{id} is the global default ({spec} in {})",
+                config_file.display()
+            ),
+            hint: format!(
+                "set another default with `cxvm global <id>` first, or run \
+                 `cxvm remove {id} --force`"
+            ),
+        });
+    }
+
+    store.remove(&lock, &id)?;
+    drop(lock);
+    println!("Removed {id} from {}", toolchain.path.display());
+    if global.is_some() {
+        eprintln!("warning: {id} was the global default; set another with `cxvm global <id>`");
+    }
+    if let Ok(Resolution { spec, source }) = ctx.resolve()
+        && !matches!(source, Source::Global(_))
+        && loses(&spec)
+    {
+        eprintln!(
+            "warning: {id} is still pinned here ({source}); reinstall it with `cxvm install`, \
+             or pin another with `cxvm use <id>`"
+        );
+    }
+    Ok(())
+}
+
 /// `cxvm link`: register the toolchain in `prefix` under a detected `-local` id, or `as_id`.
 pub fn link(ctx: &Context, prefix: &Path, as_id: Option<&str>) -> Result<()> {
     let prefix = files::absolute(&ctx.cwd, prefix);

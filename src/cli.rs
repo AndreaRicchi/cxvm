@@ -141,7 +141,9 @@ pub fn run(cli: Cli) -> Result<()> {
             id: Some(id),
             from_source,
         } => return commands::install(&Context::from_process_env()?, &id, from_source),
-        Command::Remove { .. } => ("remove", "M3"),
+        Command::Remove { id, force } => {
+            return commands::remove(&Context::from_process_env()?, &id, force);
+        }
         Command::Use { id } => return commands::use_(&Context::from_process_env()?, &id),
         Command::Global { id } => return commands::global(&Context::from_process_env()?, &id),
         Command::Exec { cmd } => return commands::exec(&Context::from_process_env()?, &cmd),

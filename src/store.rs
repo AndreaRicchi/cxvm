@@ -258,6 +258,26 @@ impl Store {
         Ok(target)
     }
 
+    /// Deletes the installed toolchain `id`. It is first moved into `staging/`, so an
+    /// interruption never leaves a half-deleted toolchain in `toolchains/`.
+    pub fn remove(&self, _lock: &StoreLock, id: &ToolchainId) -> Result<()> {
+        let path = self.paths.toolchain_dir(id);
+        let trash = self.staging_path(&format!("removing-{}-{}", id.kind(), id.version()));
+        let io_error = |action, path: &Path| {
+            let path = path.to_owned();
+            move |source| Error::Io {
+                action,
+                path,
+                source,
+                hint: "check the permissions of the cxvm store",
+            }
+        };
+        let staging = self.paths.staging_dir();
+        fs::create_dir_all(&staging).map_err(io_error("create", &staging))?;
+        fs::rename(&path, &trash).map_err(io_error("move", &path))?;
+        remove_all(&trash)
+    }
+
     /// The highest installed toolchain matching `spec`; `None` for `system` or no match.
     pub fn find(&self, spec: &Spec) -> Result<Option<Installed>> {
         let installed = self.installed()?;
@@ -643,6 +663,22 @@ mod tests {
         fs::create_dir_all(&staged).unwrap();
         let err = s.commit(&lock, &staged, &id).unwrap_err().to_string();
         assert!(err.contains("already installed"), "{err}");
+    }
+
+    #[test]
+    fn remove_deletes_the_toolchain_through_staging() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = store(dir.path());
+        let path = add(&s, "clang/19.1.0/bin");
+        fs::write(path.join("clang"), "").unwrap();
+        let lock = s.lock().unwrap();
+        s.remove(&lock, &"clang@19.1.0".parse().unwrap()).unwrap();
+        assert!(!s.paths().toolchains_dir().join("clang/19.1.0").exists());
+        assert_eq!(fs::read_dir(s.paths().staging_dir()).unwrap().count(), 0);
+        let err = s
+            .remove(&lock, &"clang@19.1.0".parse().unwrap())
+            .unwrap_err();
+        assert!(err.to_string().contains("cannot move"), "{err}");
     }
 
     #[test]
