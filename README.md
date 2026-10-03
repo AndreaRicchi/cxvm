@@ -8,7 +8,8 @@ root, no wrapping of compiler calls: generated files point at real paths, so bui
 even when `cxvm` is not on `PATH`.
 
 **Status: pre-alpha.** Pinning per project, linking compilers you already have, and installing
-official prebuilt Clang releases (`cxvm install clang@19`) work; GCC installs come next. The
+prebuilt releases work: official LLVM builds of Clang (`cxvm install clang@19`) and xPack builds
+of GCC (`cxvm install gcc@13`). Building GCC from source comes next. The
 specification and milestone plan live in [PLAN.md](PLAN.md).
 
 ## Building
