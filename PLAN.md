@@ -9,7 +9,7 @@
 - [x] M1 — Config, IDs & resolution
 - [x] M2 — Project activation (first useful version)
 - [x] M3 — Clang prebuilt backend
-- [ ] M4 — GCC prebuilt backend + runtime libs
+- [x] M4 — GCC prebuilt backend + runtime libs
 - [ ] M5 — GCC from source
 - [ ] M6 — Clang ↔ libstdc++ pairing & IDE integration
 - [ ] M7 — Doctor, safety & polish
@@ -64,6 +64,16 @@ _(Append dated one-line entries: what was decided and why.)_
 - 2026-10-03: `CXVM_CATALOG=<file>` replaces the embedded catalog; the tests serve it from a local HTTP server.
 - 2026-10-03: Found while testing: 18.1.8 and 13.0.1 need `libtinfo.so.5`, which Ubuntu 24.04+ lacks (install refused, hint names packages), and clang 17 fails on GCC 16's libstdc++ headers until given `--gcc-install-dir` (M6). See docs/backends.md.
 - 2026-10-03: CI runs clippy and tests with `--workspace`, so the xtask is checked too.
+- 2026-10-03: GCC prebuilts come from xPack only (17 versions: 8.5.0, 11.2–15.2); no conda-forge, whose GCC is several packages with their own sysroot. GCC 9, 10, 16 and ≤7 wait for M5.
+- 2026-10-03: The GCC catalog (`catalog/gcc.toml`, embedded next to `clang.toml`) holds every GCC version from its highest xPack build; the build number shows only in the asset name, the id stays `gcc@13.3.0`. `cargo xtask catalog [clang|gcc]` regenerates one or both.
+- 2026-10-03: GCC sha256s come from xPack's `<asset>.sha`, which must equal the GitHub digest when there is one; nothing is hashed at generation.
+- 2026-10-03: New dependency `flate2` (pure-Rust backend) for xPack's `.tar.gz`; the decoder is chosen from the archive's name.
+- 2026-10-03: `.cxvm-meta.toml` gains optional `libstdcxx_dir` and `gcc_install_dir` (GCC only), detected in staging with `g++ -print-file-name=libstdc++.so.6` and `gcc -print-libgcc-file-name` and recorded as store paths. A GCC whose libstdc++ is not inside its own prefix is refused.
+- 2026-10-03: The toolchain file's rpath still comes from probing the driver when `.cxvm/` is generated, so linked and installed GCCs share one code path; the meta fields are the record for M6 and M7.
+- 2026-10-03: GCC smoke test: the hello-world is linked with `-Wl,-rpath,<lib dir>` and `ldd` must resolve its `libstdc++.so.6` there. A "recent library feature" proves nothing on a host whose libstdc++ is newer than the toolchain's (this one), so the M4 "done when" was shown in an `ubuntu:24.04` container instead.
+- 2026-10-03: Severity as in M3: a hello-world that does not build, run or load the right libstdc++ only warns. That is what happens with xPack builds bundling binutils older than 2.38 (11.2.0, 8.5.0) on hosts whose glibc uses `DT_RELR` (Ubuntu 26.04); `-B/usr/bin` works around it. See docs/backends.md.
+- 2026-10-03: The toolchain file also sets `CMAKE_MODULE_LINKER_FLAGS_INIT` (§4 updated), and gets no rpath when libstdc++ is in a default loader directory, as for a linked distro GCC (closes the 2026-09-30 note).
+- 2026-10-03: The test sandbox passes an empty `CXVM_CATALOG` by default: with GCC in the embedded catalog, a test pinning `gcc@13.3.0` downloaded the real release.
 
 ---
 
@@ -189,6 +199,7 @@ set(CMAKE_CXX_COMPILER "/home/me/.local/share/cxvm/toolchains/gcc/13.3.0/bin/g++
 # Programs must load this GCC's libstdc++ at runtime, not the system one
 set(CMAKE_EXE_LINKER_FLAGS_INIT    "-Wl,-rpath,/home/me/.local/share/cxvm/toolchains/gcc/13.3.0/lib64")
 set(CMAKE_SHARED_LINKER_FLAGS_INIT "-Wl,-rpath,/home/me/.local/share/cxvm/toolchains/gcc/13.3.0/lib64")
+set(CMAKE_MODULE_LINKER_FLAGS_INIT "-Wl,-rpath,/home/me/.local/share/cxvm/toolchains/gcc/13.3.0/lib64")
 ```
 
 Intended use: `cmake -S . -B build/gcc-13.3.0 -DCMAKE_TOOLCHAIN_FILE=.cxvm/toolchain.cmake`
