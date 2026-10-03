@@ -199,3 +199,10 @@ the libraries the program links directly.
 
 cxvm's post-install check builds a C++ hello-world with that rpath, runs it, and checks with
 `ldd` that `libstdc++.so.6`, when the program needs one, is the toolchain's.
+
+Checked where it matters, on a host older than the toolchain: in an `ubuntu:24.04` container
+(libstdc++ 6.0.33 from GCC 14, glibc 2.39, `libc6-dev` installed, no system GCC),
+`cxvm install gcc@15` passes that check, and a program needing `GLIBCXX_3.4.34` (a localised
+`std::format` of a `std::chrono` value) runs when linked with the flag from `toolchain.cmake`.
+Without the flag it stops with ``version `GLIBCXX_3.4.34' not found``. `LD_LIBRARY_PATH` was
+unset in both runs.
