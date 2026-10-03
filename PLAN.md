@@ -8,7 +8,7 @@
 - [x] M0 — Skeleton & CI
 - [x] M1 — Config, IDs & resolution
 - [x] M2 — Project activation (first useful version)
-- [ ] M3 — Clang prebuilt backend
+- [x] M3 — Clang prebuilt backend
 - [ ] M4 — GCC prebuilt backend + runtime libs
 - [ ] M5 — GCC from source
 - [ ] M6 — Clang ↔ libstdc++ pairing & IDE integration
@@ -49,6 +49,21 @@ _(Append dated one-line entries: what was decided and why.)_
 - 2026-09-30: `install` without an id regenerates `.cxvm/` from the project's `.cxvmrc` (ignoring `CXVM_COMPILER`) and points to `cxvm link` until downloads exist (M3).
 - 2026-09-30: Spawning a compiler retries on ETXTBSY for about a second: a file just written is briefly "busy" while another thread's forked child still holds it open, which made parallel tests flaky.
 - 2026-09-30: No store lock yet: `links.toml` and `config.toml` are written atomically, but concurrent `link`s can race until M3 adds the lock.
+- 2026-10-03: The clang catalog (`catalog/clang.toml`, embedded) holds every LLVM release from 19.1.0 plus the newest patch of each major 11–18; `cargo xtask catalog` regenerates it, keeps known entries and never re-hashes them.
+- 2026-10-03: Catalog sha256s come from the GitHub asset digest, the SLSA attestation subject or a `.sha256` file, cross-checked when several exist; seven pre-19 releases were hashed by downloading them (`source = "hashed-at-generation"`).
+- 2026-10-03: At run time cxvm trusts only the embedded sha256; provenance is checked when the catalog is generated, not by the binary (no Sigstore dependency).
+- 2026-10-03: Asset choice per release: `LLVM-*-Linux-X64`, then the lowest Ubuntu version, then RHEL, then SLES; assets named with another version are skipped (11.0.0 ships `11.0.1-rc2`).
+- 2026-10-03: Dependencies: `ureq` (rustls + ring, bundled Mozilla roots: no system certificates, so no corporate CA yet), `sha2`, `tar` (no xattr), `liblzma` (static, no bindgen), `indicatif`. No `anyhow`.
+- 2026-10-03: The store lock covers `install` (download included), `remove`, `link` and `unlink`, and taking it deletes whatever `staging/` holds; this replaces the 2026-09-30 "no store lock yet" entry.
+- 2026-10-03: Downloads go to `<asset>.part`, resume with a Range request, and are renamed only once size and sha256 match; cached archives are re-verified before reuse and kept until M7's `prune`.
+- 2026-10-03: Post-install checks: a library `ldd` cannot find or a version other than the catalog's refuses the install; a C++ hello-world that does not build or run only warns.
+- 2026-10-03: The `Backend` trait is `name` + `prepare` (archive → prefix in staging); listing and resolving live in the catalog, and download, checks, metadata and the rename are shared.
+- 2026-10-03: `.cxvm-meta.toml` records id, backend, url, sha256, install time (RFC 3339 UTC), cc, cxx and the first line of `--version`, like `links.toml`, rather than the whole output.
+- 2026-10-03: `install` resolves partial ids against the catalog (highest known), even when a lower match is installed; an installed id is a no-op; suffixed ids and `system` are refused. Without an id it now downloads a missing pin (updates the 2026-09-30 entry).
+- 2026-10-03: `remove` takes an exact id; it refuses linked toolchains and, without `--force`, a global default that nothing else would satisfy. It moves the prefix into `staging/` before deleting it.
+- 2026-10-03: `CXVM_CATALOG=<file>` replaces the embedded catalog; the tests serve it from a local HTTP server.
+- 2026-10-03: Found while testing: 18.1.8 and 13.0.1 need `libtinfo.so.5`, which Ubuntu 24.04+ lacks (install refused, hint names packages), and clang 17 fails on GCC 16's libstdc++ headers until given `--gcc-install-dir` (M6). See docs/backends.md.
+- 2026-10-03: CI runs clippy and tests with `--workspace`, so the xtask is checked too.
 
 ---
 
