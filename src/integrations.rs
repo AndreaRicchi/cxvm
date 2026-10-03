@@ -26,7 +26,8 @@ pub struct Activation {
     pub cc: Option<PathBuf>,
     /// C++ compiler; `None` only for `system` without a `c++` on `PATH`.
     pub cxx: Option<PathBuf>,
-    /// Directory holding the toolchain's `libstdc++.so.6`, baked in as an rpath.
+    /// Directory holding the toolchain's `libstdc++.so.6`, baked in as an rpath; `None` when
+    /// the dynamic loader searches it anyway.
     pub rpath: Option<PathBuf>,
 }
 
@@ -55,7 +56,7 @@ impl Activation {
             }
         }
         let rpath = match id.kind() {
-            Kind::Gcc => detect::libstdcxx_dir(cxx),
+            Kind::Gcc => detect::libstdcxx_dir(cxx).filter(|dir| !is_default_library_dir(dir)),
             Kind::Clang => None,
         };
         Ok(Self {
@@ -77,6 +78,20 @@ impl Activation {
             rpath: None,
         }
     }
+}
+
+/// Whether the dynamic loader searches `dir` without being told to, as it does for a distro
+/// GCC's libstdc++: an rpath naming it would only be noise.
+fn is_default_library_dir(dir: &Path) -> bool {
+    const DEFAULT: [&str; 6] = [
+        "/lib",
+        "/lib64",
+        "/lib/x86_64-linux-gnu",
+        "/usr/lib",
+        "/usr/lib64",
+        "/usr/lib/x86_64-linux-gnu",
+    ];
+    DEFAULT.iter().any(|default| dir == Path::new(default))
 }
 
 /// Shell syntax for [`render_env`].
@@ -115,7 +130,8 @@ pub fn render_toolchain_cmake(activation: &Activation) -> String {
             out,
             "# Programs must load this toolchain's libstdc++ at runtime, not the system one\n\
              set(CMAKE_EXE_LINKER_FLAGS_INIT    {flag})\n\
-             set(CMAKE_SHARED_LINKER_FLAGS_INIT {flag})"
+             set(CMAKE_SHARED_LINKER_FLAGS_INIT {flag})\n\
+             set(CMAKE_MODULE_LINKER_FLAGS_INIT {flag})"
         )
         .expect("writing to a String cannot fail");
     }
@@ -319,8 +335,24 @@ mod tests {
              set(CMAKE_CXX_COMPILER \"/s/toolchains/gcc/13.3.0/bin/g++\")\n\
              # Programs must load this toolchain's libstdc++ at runtime, not the system one\n\
              set(CMAKE_EXE_LINKER_FLAGS_INIT    \"-Wl,-rpath,/s/toolchains/gcc/13.3.0/lib64\")\n\
-             set(CMAKE_SHARED_LINKER_FLAGS_INIT \"-Wl,-rpath,/s/toolchains/gcc/13.3.0/lib64\")\n"
+             set(CMAKE_SHARED_LINKER_FLAGS_INIT \"-Wl,-rpath,/s/toolchains/gcc/13.3.0/lib64\")\n\
+             set(CMAKE_MODULE_LINKER_FLAGS_INIT \"-Wl,-rpath,/s/toolchains/gcc/13.3.0/lib64\")\n"
         );
+    }
+
+    #[test]
+    fn default_library_dirs_need_no_rpath() {
+        for dir in ["/usr/lib/x86_64-linux-gnu", "/usr/lib64", "/lib"] {
+            assert!(is_default_library_dir(Path::new(dir)), "{dir}");
+        }
+        for dir in [
+            "/s/toolchains/gcc/13.3.0/lib64",
+            "/opt/gcc-11/lib64",
+            "/usr/lib/gcc/x86_64-linux-gnu/15",
+            "/usr/local/lib64",
+        ] {
+            assert!(!is_default_library_dir(Path::new(dir)), "{dir}");
+        }
     }
 
     #[test]
