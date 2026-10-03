@@ -84,6 +84,14 @@ pub enum Error {
         hint: String,
     },
 
+    /// A download that failed or whose content did not verify.
+    #[error("cannot download {url}: {reason}\n  hint: {hint}")]
+    Download {
+        url: String,
+        reason: String,
+        hint: String,
+    },
+
     /// A cxvm file (`config.toml`, `.cxvmrc`) has invalid content.
     #[error("{} is invalid: {message}\n  hint: {hint}", path.display())]
     InvalidFile {
