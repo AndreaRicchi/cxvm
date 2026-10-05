@@ -75,7 +75,40 @@ crt files). When the post-install C++ hello-world does not build, cxvm still ins
 and warns. That happens when there is no GCC (no `g++` or libstdc++ development package), or
 when the newest one is too new for an old clang: on Ubuntu 26.04, clang 17.0.6 fails on GCC
 16's `<iostream>` (`member access into incomplete type '__normal_iterator'`) but works with
-`--gcc-install-dir=/usr/lib/gcc/x86_64-linux-gnu/15`. M6 pairs clang with a chosen GCC.
+`--gcc-install-dir=/usr/lib/gcc/x86_64-linux-gnu/15`. `[clang] gcc` in `.cxvmrc` pairs clang
+with a chosen GCC; see "Pairing clang with a GCC" below.
+
+### Pairing clang with a GCC (M6)
+
+Two driver options select the GCC whose headers, libstdc++ and crt files clang uses. Tried on
+Ubuntu 26.04 (2026-10-05) with the catalog's clang 15.0.6, 16.0.4 and 17.0.6 and the distro's
+clang 21.1.8, against xPack GCC 11.5.0 and 13.3.0 in the store and the distro's GCC 15 and 16
+in `/usr`:
+
+| Option | Meaning | 15.0.6 | 16.0.4, 17.0.6, 21.1.8 |
+|---|---|---|---|
+| `--gcc-install-dir=<prefix>/lib/gcc/<triple>/<version>` | exactly this GCC | `unsupported option` | works |
+| `--gcc-toolchain=<prefix>` | the newest GCC below `<prefix>/lib/gcc/<triple>/` | works | works |
+
+The releases between 15.0.6 and 16.0.4 were not tried; cxvm passes `--gcc-install-dir` from
+major 16 on and `--gcc-toolchain` before, and the catalog's only clang 16 is 16.0.4.
+`--gcc-toolchain=/usr` selects GCC 16 here even when 15 is wanted, so cxvm refuses to pair a
+clang before 16 with a GCC whose prefix holds others. A store GCC has a prefix of its own, and
+its triple (`x86_64-pc-linux-gnu` for xPack and from-source builds) is one clang knows.
+
+How the option reaches the compiler matters:
+
+- In `toolchain.cmake` it is a second element of `CMAKE_<LANG>_COMPILER`
+  (`set(CMAKE_CXX_COMPILER "<clang++>" "--gcc-install-dir=…")`). In `CMAKE_CXX_FLAGS_INIT` it
+  works too, until someone configures with `-DCMAKE_CXX_FLAGS=-O1`: the option is then gone and
+  the build silently uses the host's newest GCC. Checked with CMake 4.2.3.
+- The option appears in `compile_commands.json`, and clangd (21.1.8 here) honours it: with no
+  `--query-driver`, go-to-definition on `std::vector` opens the paired GCC's `stl_vector.h`. A
+  `--query-driver` glob that matches the clang driver breaks this: clangd asks the driver for
+  its include directories without the option and gets the host's GCC 16. cxvm therefore writes
+  a `--query-driver` glob for GCC pins only.
+- Programs also need the paired GCC's `libstdc++.so.6` at run time, so the toolchain file adds
+  the same rpath as for that GCC itself.
 
 ### Integrity data
 
