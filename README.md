@@ -10,8 +10,10 @@ even when `cxvm` is not on `PATH`.
 **Status: pre-alpha.** Pinning per project, linking compilers you already have, and installing
 prebuilt releases work: official LLVM builds of Clang (`cxvm install clang@19`) and xPack builds
 of GCC (`cxvm install gcc@13`). GCC releases without a prebuilt archive are built from source
-(`cxvm install gcc@10 --from-source`). Pairing Clang with a chosen GCC and editor integration
-come next. The specification and milestone plan live in [PLAN.md](PLAN.md).
+(`cxvm install gcc@10 --from-source`). Clang can be paired with the libstdc++ of a chosen GCC
+(`cxvm use clang@17 --gcc gcc@13`), and CMake presets and VS Code settings follow the pin when
+a project asks for them: see [docs/integrations.md](docs/integrations.md). `cxvm doctor` comes
+next. The specification and milestone plan live in [PLAN.md](PLAN.md).
 
 ## Building
 
