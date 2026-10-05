@@ -10,7 +10,7 @@
 - [x] M2 — Project activation (first useful version)
 - [x] M3 — Clang prebuilt backend
 - [x] M4 — GCC prebuilt backend + runtime libs
-- [ ] M5 — GCC from source
+- [x] M5 — GCC from source
 - [ ] M6 — Clang ↔ libstdc++ pairing & IDE integration
 - [ ] M7 — Doctor, safety & polish
 - [ ] M8 — Release
@@ -75,6 +75,21 @@ _(Append dated one-line entries: what was decided and why.)_
 - 2026-10-03: The toolchain file also sets `CMAKE_MODULE_LINKER_FLAGS_INIT` (§4 updated), and gets no rpath when libstdc++ is in a default loader directory, as for a linked distro GCC (closes the 2026-09-30 note).
 - 2026-10-03: The test sandbox passes an empty `CXVM_CATALOG` by default: with GCC in the embedded catalog, a test pinning `gcc@13.3.0` downloaded the real release.
 - 2026-10-03: `list --available` prints a table per kind with one row per major (versions newest first, `*` on installed ones, `download` = archive size of the row's newest version), wrapped at a fixed 80 columns; 28 lines instead of 64. `--json` still lists every release.
+- 2026-10-05: GCC source releases are a third embedded catalog (`catalog/gcc-source.toml`): every GNU release from 7.1.0 plus 6.5.0, 5.5.0, 4.9.4 and 4.8.5 (48 tarballs), not literally "any release". Being listed means cxvm can fetch and verify it, not that it builds on every host.
+- 2026-10-05: Source tarballs are verified like prebuilt ones, by the embedded sha256. `cargo xtask catalog gcc-source` records a tarball only after `gpgv` accepts its `.sig` against the GNU keyring and its sha512 equals `sha512.sum` on gcc.gnu.org; cxvm never runs GnuPG. Catalog URLs go through `ftpmirror.gnu.org`.
+- 2026-10-05: GMP, MPFR, MPC and ISL are fetched by cxvm, not by `contrib/download_prerequisites` (ftp URLs up to GCC 9, no checks up to GCC 6, needs wget). The script is only read for the versions; the 20 tarballs of `gcc.gnu.org/pub/gcc/infrastructure/` are in the catalog. A missing ISL is skipped, CLooG and gettext always.
+- 2026-10-05: Without `--from-source` a partial id still resolves among prebuilt archives (`gcc@13` is xPack 13.4.0); a version that only exists as source is built after a `[y/N]` question on a terminal, else refused with the `--from-source` command. With `--from-source` the highest source release wins (`gcc@13` is 13.5.0).
+- 2026-10-05: Build options beyond §8: `-j/--jobs` and a repeatable `--configure-arg`; all build options require `--from-source`. `--host-compiler` takes any installed or linked GCC, never Clang.
+- 2026-10-05: The build is `configure --prefix=<store path> --enable-languages=c,c++ --disable-multilib --disable-bootstrap`, `make`, `make install-strip DESTDIR=<staging>` (the stripped prefix is 176–282 MB), in an environment of its own (`HOME`, `TMPDIR`, `LC_ALL=C`, `CC`, `CXX`, and `PATH` without cxvm's directories).
+- 2026-10-05: Before any download the host is checked: `make`, `m4`, `awk`, and a host compiler that builds and runs a C and a C++ program; the error names the distro packages.
+- 2026-10-05: The build log is `~/.cache/cxvm/logs/gcc-<version>-<UTC time>.log`, outside staging so that it survives a failure; errors quote the first `error:` and the last 12 lines.
+- 2026-10-05: The build runs in its own process group; SIGINT, SIGTERM or SIGHUP stops the group, deletes staging and exits 130, a second signal ends cxvm at once. Outside the build phase an interrupt still relies on the next lock to clean staging (M3 behaviour).
+- 2026-10-05: The `Backend` trait is now `prepare(release, archive, work dir) -> prefix` plus `describe(meta)`, and returns complete errors; `backends::install` takes the backend. `.cxvm-meta.toml` gains optional `host_compiler` and `configure_args`; the source backend is `gnu-source`.
+- 2026-10-05: New dependencies: `bzip2` (pure-Rust backend; the prerequisites are `.tar.bz2`), `signal-hook`, and `libc` for one `kill(2)` on the build's process group, the crate's only `unsafe`.
+- 2026-10-05: `list --available` shows the releases that can only be built under a title of their own; `--json` gains `from_source`.
+- 2026-10-05: A from-source GCC has the layout of an xPack one (`lib64/libstdc++.so.6`, triple `x86_64-pc-linux-gnu`) but no binutils: it runs the `as` and `ld` on `PATH`. Its `cc1` links the host compiler's libstdc++ statically.
+- 2026-10-05: Found while testing on Ubuntu 26.04: GCC 16.2.0 builds as is (7m19s on 22 CPUs); GCC 10.5.0 needs `--configure-arg=--disable-libsanitizer` because glibc 2.42 dropped `<termio.h>`, with either host compiler. cxvm does not add the argument itself; the failure names it. See docs/backends.md.
+- 2026-10-05: The time estimate is `4 + 70 / jobs` minutes (from the 16.2.0 build), times three for `--bootstrap`, which was not measured.
 
 ---
 
@@ -147,6 +162,7 @@ Download cache: `$XDG_CACHE_HOME/cxvm`, else `~/.cache/cxvm`.
   staging/                 in-progress installs (same filesystem → atomic rename)
   lock                     lock file for store mutations
 ~/.cache/cxvm/downloads/   reusable archives
+~/.cache/cxvm/logs/        logs of builds from source
 ```
 
 `.cxvm-meta.toml` (per toolchain): id, backend, source URL, checksum, install date, detected
@@ -213,7 +229,7 @@ Intended use: `cmake -S . -B build/gcc-13.3.0 -DCMAKE_TOOLCHAIN_FILE=.cxvm/toolc
 
 | Command | Purpose |
 |---|---|
-| `cxvm install [<id>] [--from-source]` | Install a toolchain. With no id: install what `.cxvmrc` needs and regenerate `.cxvm/` |
+| `cxvm install [<id>] [--from-source]` | Install a toolchain. With no id: install what `.cxvmrc` needs and regenerate `.cxvm/`. With `--from-source`: build GCC, optionally with `--bootstrap`, `--host-compiler <id>`, `-j <n>`, `--configure-arg <arg>` |
 | `cxvm remove <id> [--force]` | Remove from the store (refuse if it's the global default unless `--force`) |
 | `cxvm list [--available] [--json]` | Installed toolchains (marking active/global), or installable versions |
 | `cxvm use <id>` | Pin in the current project: write `.cxvmrc`, (re)generate `.cxvm/` |
