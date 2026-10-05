@@ -206,3 +206,186 @@ Checked where it matters, on a host older than the toolchain: in an `ubuntu:24.0
 `std::format` of a `std::chrono` value) runs when linked with the flag from `toolchain.cmake`.
 Without the flag it stops with ``version `GLIBCXX_3.4.34' not found``. `LD_LIBRARY_PATH` was
 unset in both runs.
+
+## GCC: GNU source releases (M5)
+
+Source: GNU's release tarballs. Read on 2026-10-05; the builds below ran on Ubuntu 26.04 (glibc
+2.43, binutils 2.46, system GCC 15.2.0, 22 CPUs).
+
+### What GNU publishes
+
+| Where | Holds |
+|---|---|
+| `https://ftp.gnu.org/gnu/gcc/gcc-<version>/` | `gcc-<version>.tar.gz`, a second tarball (`.tar.xz` or `.tar.bz2`), a detached GPG signature `<tarball>.sig` for each, diffs to the previous release. No checksum file |
+| `https://ftpmirror.gnu.org/gnu/gcc/…` | the same tree, as a redirect (302) to a nearby mirror, often plain `http://` |
+| `https://gcc.gnu.org/pub/gcc/releases/gcc-<version>/` | the same files on the GCC project's own server, plus `sha512.sum` |
+| `https://ftp.gnu.org/gnu/gnu-keyring.gpg` | the GNU keyring, with the keys of the GCC release managers |
+| `https://gcc.gnu.org/pub/gcc/infrastructure/` | the GMP, MPFR, MPC and ISL tarballs GCC is built with, and `sha512.sum` |
+
+The index lists every release from 2.95 to 16.2.0. The second tarball is a `.tar.xz` for 5.5.0,
+6.4.0, 6.5.0 and everything from 7.2.0; before that it is a `.tar.bz2`. cxvm takes the `.tar.xz`
+when there is one, else the `.tar.gz`.
+
+### Integrity
+
+Same model as the prebuilt backends: cxvm trusts the sha256 embedded in its catalog and checks
+every download against it, so a mirror, even over `http://`, cannot hand it another file.
+
+`cargo xtask catalog gcc-source` records a tarball only after it
+
+1. downloaded it from `ftp.gnu.org`,
+2. verified its `.sig` with `gpgv` against the GNU keyring (`source = "gpg-signature"`), and
+3. found its sha512 equal to the one in `sha512.sum` on `gcc.gnu.org`.
+
+The library tarballs have no signatures next to them: they are recorded when their sha512
+equals the one in `infrastructure/sha512.sum` (`source = "upstream-sha512"`). Entries already
+in the catalog are never downloaded again. cxvm does not run GnuPG itself: the user would need
+`gpg` and the keyring for a check the catalog already carries.
+
+### Catalog coverage
+
+Every release from 7.1.0, and the last release of each older series back to 4.8: 6.5.0, 5.5.0,
+4.9.4 and 4.8.5. Being in the catalog means cxvm can fetch and verify the sources, not that they
+build on every host: see "What was tried" below.
+
+`cxvm install gcc@13` keeps meaning the prebuilt xPack archive. A source release is used with
+`--from-source`, or, after asking on a terminal, when the version has no prebuilt archive.
+
+### Prerequisites
+
+GCC needs GMP, MPFR and MPC, and optionally ISL (for Graphite loop optimizations). cxvm unpacks
+them into the source tree as `gmp/`, `mpfr/`, `mpc/` and `isl/`, where GCC's own build
+configures and builds them statically, so nothing has to be installed on the host and nothing
+of them is needed at run time.
+
+Which versions: the ones the release's own `contrib/download_prerequisites` names, which cxvm
+reads instead of running:
+
+| GCC | Script | Names |
+|---|---|---|
+| 4.8.5 | `GMP=gmp-4.3.2` variables, fetched as `$GMP.tar.bz2` | gmp 4.3.2, mpfr 2.4.2, mpc 0.8.1; no ISL |
+| 4.9.4 | same | the same, isl 0.12.2 (and CLooG 0.18.1, which cxvm skips) |
+| 5.5.0, 6.5.0 | same | the same, isl 0.14 (5.5.0), isl 0.15 (6.5.0) |
+| 7.1.0 | `gmp='gmp-6.1.0.tar.bz2'` | gmp 6.1.0, mpfr 3.1.4, mpc 1.0.3, isl 0.16.1 |
+| 8.5.0, 9.5.0 | same | gmp 6.1.0, mpfr 3.1.4, mpc 1.0.3, isl 0.18 |
+| 10.5.0, 11.5.0 | same | gmp 6.1.0, mpfr 3.1.6, mpc 1.0.3, isl 0.18 |
+| 12.5.0 to 15.3.0 | same | gmp 6.2.1, mpfr 4.1.0, mpc 1.2.1, isl 0.24 (14 and later also gettext 0.22, which cxvm skips: glibc has `libintl`) |
+| 16.2.0 | same | gmp 6.3.0, mpfr 4.2.2, mpc 1.3.1, isl 0.24 |
+
+The script itself is not run because up to GCC 9 it fetches over `ftp://`, up to GCC 6 it
+verifies nothing, and it needs `wget` or `curl`. All 20 GMP, MPFR, MPC and ISL tarballs of
+`infrastructure/` are in the catalog; they go through the same cache and sha256 check as every
+other download. A release naming an ISL the catalog lacks is built without ISL; a missing GMP,
+MPFR or MPC stops the install.
+
+### How cxvm builds
+
+Everything happens in one directory of `staging/`, on the store's filesystem:
+
+```
+staging/gcc-10.5.0.<pid>/
+  src/     the tarball, with gmp/ mpfr/ mpc/ isl/ added
+  build/   the out-of-tree build
+  dest/    DESTDIR of the install
+```
+
+1. `src/configure --prefix=<store>/toolchains/gcc/<version> --enable-languages=c,c++
+   --disable-multilib --disable-bootstrap`, plus every `--configure-arg`; `--bootstrap` leaves
+   `--disable-bootstrap` out.
+2. `make -j<jobs>`, one job per CPU unless `-j` says otherwise.
+3. `make install-strip DESTDIR=…/dest`. The prefix is then
+   `dest/<store>/toolchains/gcc/<version>`; it gets the same checks as a prebuilt archive (`ldd`, version, runtime dirs, a C++ hello-world
+   linked with `-Wl,-rpath`) and moves into the store in one rename. GCC finds its own files
+   relative to the driver, so the checks run it from staging.
+
+`install-strip` rather than `install`: the compiler's own programs are built with `-g`, and
+stripped the prefix takes 176 MB (10.5.0) or 282 MB (16.2.0).
+
+The build's environment is not the caller's: only `HOME` and `TMPDIR` are kept, `LC_ALL` is `C`,
+`CC` and `CXX` are the host compiler's absolute paths, and `PATH` is the caller's without
+cxvm's own directories (the store and any `.cxvm`). `CFLAGS`, `LIBRARY_PATH`, `CPATH`,
+`MAKEFLAGS` and the like never reach it, and the binutils of an active cxvm toolchain are not
+picked up by `configure`.
+
+All output goes to `~/.cache/cxvm/logs/gcc-<version>-<UTC time>.log` (12 MB for 16.2.0), which
+is kept whatever happens; staging is not. A failure quotes the first `error:` line and the last
+12 lines, and names the log.
+
+The build runs in its own process group. On SIGINT, SIGTERM or SIGHUP cxvm sends that group
+SIGTERM (SIGKILL after 5 s), deletes the staging directory and exits with status 130; a second
+signal ends cxvm at once. Before the build starts (download, unpacking) a signal ends cxvm as
+usual, and the next cxvm command that takes the store lock deletes what was left in staging.
+
+### Host requirements
+
+Checked before anything is downloaded:
+
+- `make`, `m4` (GMP's `configure` needs it) and `awk` on `PATH`;
+- a host compiler whose C and C++ drivers build a program that runs: the system's `cc` and
+  `c++`, or any GCC cxvm manages with `--host-compiler <id>` (installed or linked; Clang is
+  refused).
+
+Not needed, and absent on the machine used here: `bison`, `flex`, `makeinfo`, the gettext
+tools and GNU awk (`mawk` 1.3.4 did the job). Release tarballs ship the files those generate.
+
+### The toolchain it produces
+
+Seen on the 10.5.0 and 16.2.0 builds:
+
+- Triple `x86_64-pc-linux-gnu`; `lib64/libstdc++.so.6`; install dir
+  `lib/gcc/x86_64-pc-linux-gnu/<version>`: the same layout as an xPack build from 11.2.0 on, so
+  rpath and metadata work unchanged.
+- No binutils: `gcc -print-prog-name=ld` answers `ld`, i.e. the assembler and linker are the
+  ones on `PATH` when the compiler runs, normally the host's. This is the opposite of xPack,
+  whose bundled linker can be too old for the host.
+- `cc1` and `cc1plus` need only `libc`, `libm` and `libzstd.so.1` from the host. The host
+  compiler's libstdc++ is linked in statically (`configure` adds `-static-libstdc++
+  -static-libgcc` when the host compiler accepts them), so the result does not depend on the
+  compiler it was built with. `libzstd` is there because its development package was
+  installed here and `configure` picked it up.
+- No sysroot: like xPack, it builds programs against the host's glibc headers.
+- `.cxvm-meta.toml` records `backend = "gnu-source"`, the tarball's URL and sha256, the first
+  `--version` line of the host compiler and the `configure` arguments.
+
+### What was tried
+
+On the machine described above, 22 jobs, non-bootstrap:
+
+| Release | Host compiler | Extra arguments | Result | Wall time | CPU time |
+|---|---|---|---|---|---|
+| 16.2.0 | system GCC 15.2.0 | none | installed, checks pass | 7m19s | 74 min |
+| 10.5.0 | xPack GCC 13.4.0 (linked) | none | `make` fails in libsanitizer after 4m23s | | |
+| 10.5.0 | xPack GCC 13.4.0 (linked) | `--disable-libsanitizer` | installed, checks pass | 4m21s | 41 min |
+| 10.5.0 | system GCC 15.2.0 | `--disable-libsanitizer` | installed, checks pass | 4m02s | 37 min |
+
+The 16.2.0 build tree peaked at 6.2 GiB in staging. With the pinned 10.5.0, a CMake project
+configured with the generated `toolchain.cmake` reports `CMAKE_CXX_COMPILER_VERSION` 10.5.0, and
+its program loads `libstdc++.so.6` and `libgcc_s.so.1` from the store without `LD_LIBRARY_PATH`.
+
+Not tried: `--bootstrap`, any release older than 10.5.0, and a host older than the release.
+GCC 10.5.0 did not need an older host compiler here, although GCC 15 compiles C as C23 by
+default; older releases may.
+
+The time estimate cxvm prints is `4 + 70 / jobs` minutes, three times that for `--bootstrap`:
+the 16.2.0 numbers split into a part that more jobs do not shorten and the rest. It is too
+high for old releases (8 minutes announced for 10.5.0, 4 taken).
+
+### libsanitizer and the host's glibc
+
+The sanitizer runtime is the part of GCC that knows the most about glibc's internals, and old
+releases stop building when glibc moves on. Here: glibc 2.43 has no `<termio.h>` any more (it
+went in 2.42), and GCC 10.5.0 fails with
+
+    sanitizer_platform_limits_posix.cpp:420:31: error: invalid application of 'sizeof' to
+    incomplete type '__sanitizer::termio'
+
+`--configure-arg=--disable-libsanitizer` builds a compiler without `-fsanitize=address` and its
+siblings; everything else works. cxvm does not add it by itself: when `make` fails in
+`libsanitizer` the error says so and names the argument, at the cost of a failed build (four
+minutes here).
+
+Which releases still use `struct termio`, read from the sources of the ones named (only
+10.5.0 was built): 4.9.4, 6.5.0, the last release of each major from 7 to 12, 13.1.0, 13.3.0,
+13.4.0, 14.1.0 to 14.3.0 and 15.1.0. It is gone in 13.5.0, 14.4.0, 15.2.0, 15.3.0, 16.1.0 and
+16.2.0. So on a host with glibc 2.42 or later, expect to need the argument for everything
+before 13.5.0, for 14.1.0 to 14.3.0 and for 15.1.0.
