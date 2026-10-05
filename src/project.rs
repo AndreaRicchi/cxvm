@@ -133,10 +133,26 @@ const FIX_HINT: &str = "the file must contain `compiler = \"<id>\"`, e.g. \
                         and an `[integrations]` table with `cmake_presets`, `vscode` and \
                         `gitignore`; fix it, or delete it and run `cxvm use <id>`";
 
+/// A change to a `.cxvmrc` that has been checked but not written yet.
+#[derive(Debug, Clone)]
+pub struct PendingRc {
+    path: PathBuf,
+    text: String,
+    /// The file's contents once written.
+    pub rc: ProjectRc,
+}
+
+impl PendingRc {
+    /// Replaces the file atomically.
+    pub fn write(&self) -> Result<()> {
+        files::write_atomic(&self.path, &self.text)
+    }
+}
+
 /// Pins `compiler` in the `.cxvmrc` at `path`, and with `clang_gcc` sets `[clang] gcc` too.
 /// Everything else in an existing file is kept as written, comments included. A file that
-/// would still be invalid afterwards is reported and left alone.
-pub fn write_rc(path: &Path, compiler: &Spec, clang_gcc: Option<&Spec>) -> Result<()> {
+/// would still be invalid afterwards is an error.
+pub fn edit_rc(path: &Path, compiler: &Spec, clang_gcc: Option<&Spec>) -> Result<PendingRc> {
     let text = files::read_text(path)?.unwrap_or_default();
     let mut doc: DocumentMut =
         text.parse()
@@ -156,8 +172,17 @@ pub fn write_rc(path: &Path, compiler: &Spec, clang_gcc: Option<&Spec>) -> Resul
         }
     }
     let text = doc.to_string();
-    ProjectRc::parse(path, &text)?;
-    files::write_atomic(path, &text)
+    let rc = ProjectRc::parse(path, &text)?;
+    Ok(PendingRc {
+        path: path.to_owned(),
+        text,
+        rc,
+    })
+}
+
+/// [`edit_rc`], written at once.
+pub fn write_rc(path: &Path, compiler: &Spec, clang_gcc: Option<&Spec>) -> Result<()> {
+    edit_rc(path, compiler, clang_gcc)?.write()
 }
 
 /// Sets `key = "<value>"` in `table`; a value already there keeps its place and its comments.

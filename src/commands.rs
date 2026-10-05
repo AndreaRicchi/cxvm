@@ -16,7 +16,7 @@ use crate::error::{Error, Result};
 use crate::files;
 use crate::integrations::{self, Activation, Gitignore, Shell};
 use crate::paths::Paths;
-use crate::project::{self, Resolution, Source};
+use crate::project::{self, ProjectRc, Resolution, Source};
 use crate::store::{Installed, Link, Store};
 use crate::toolchain::{self, Kind, Spec, ToolchainId};
 
@@ -368,6 +368,17 @@ struct CurrentReport {
     source_path: Option<String>,
     installed: bool,
     path: Option<String>,
+    /// The GCC a clang is paired with by `[clang] gcc`, or null.
+    clang_gcc: Option<PairingReport>,
+}
+
+#[derive(Debug, Serialize)]
+struct PairingReport {
+    id: Option<String>,
+    requested: String,
+    source_path: String,
+    installed: bool,
+    path: Option<String>,
 }
 
 /// `cxvm current`: the active toolchain and why. Fails, after printing, when the resolved
@@ -385,6 +396,24 @@ pub fn current(ctx: &Context, json: bool) -> Result<()> {
             None => (None, None, false),
         },
     };
+    // The pairing of an installed clang, and the GCC it selects if that is installed.
+    let is_clang = matches!(
+        spec,
+        Spec::Toolchain {
+            kind: Kind::Clang,
+            ..
+        }
+    );
+    let pairing = match project::find_rc(&ctx.cwd) {
+        Some(rc) if is_clang && installed => match ProjectRc::load(&rc)?.clang_gcc {
+            Some(request) => {
+                let gcc = store.find(&request)?;
+                Some((request, rc, gcc))
+            }
+            None => None,
+        },
+        _ => None,
+    };
 
     if json {
         let (source_name, source_path) = match &source {
@@ -400,6 +429,13 @@ pub fn current(ctx: &Context, json: bool) -> Result<()> {
             source_path: source_path.map(|p| p.display().to_string()),
             installed,
             path: path.as_ref().map(|p| p.display().to_string()),
+            clang_gcc: pairing.as_ref().map(|(request, rc, gcc)| PairingReport {
+                id: gcc.as_ref().map(|gcc| gcc.id.to_string()),
+                requested: request.to_string(),
+                source_path: rc.display().to_string(),
+                installed: gcc.is_some(),
+                path: gcc.as_ref().map(|gcc| gcc.path.display().to_string()),
+            }),
         };
         let text = serde_json::to_string_pretty(&report).expect("report serializes");
         println!("{text}");
@@ -414,12 +450,23 @@ pub fn current(ctx: &Context, json: bool) -> Result<()> {
             (None, Spec::System) => println!("no `cc` found on PATH"),
             (None, Spec::Toolchain { .. }) => {}
         }
+        if let Some((request, rc, gcc)) = &pairing {
+            let rc = rc.display();
+            match gcc {
+                Some(gcc) => println!("with {} (`[clang] gcc` in {rc})", gcc.id),
+                None => println!("with {request} (`[clang] gcc` in {rc}, not installed)"),
+            }
+        }
     }
 
-    if installed {
-        Ok(())
-    } else {
-        Err(not_installed_error(&store, &spec, format!(" ({source})"))?)
+    if !installed {
+        return Err(not_installed_error(&store, &spec, format!(" ({source})"))?);
+    }
+    match &pairing {
+        Some((request, rc, None)) => {
+            Err(not_installed_error(&store, request, clang_gcc_context(rc))?)
+        }
+        _ => Ok(()),
     }
 }
 
@@ -502,20 +549,65 @@ impl Target {
         }
     }
 
-    fn activation(&self, ctx: &Context) -> Result<Activation> {
+    /// Whether it is a clang cxvm manages, the only target `[clang] gcc` applies to.
+    fn is_clang(&self) -> bool {
+        matches!(self, Target::Toolchain(toolchain) if toolchain.id.kind() == Kind::Clang)
+    }
+
+    /// `gcc` is the GCC a clang is paired with, from [`paired_gcc`].
+    fn activation(&self, ctx: &Context, gcc: Option<&Installed>) -> Result<Activation> {
         match self {
             Target::System => Ok(Activation::for_system(
                 ctx.path_var.as_deref(),
                 ctx.paths.data_dir(),
             )),
-            Target::Toolchain(toolchain) => Activation::for_toolchain(toolchain),
+            Target::Toolchain(toolchain) => Activation::for_toolchain(toolchain, gcc),
         }
     }
 }
 
-/// Regenerates `<root>/.cxvm/` for `target` and makes sure git ignores it.
-fn generate_project(ctx: &Context, root: &Path, target: &Target) -> Result<()> {
-    let activation = target.activation(ctx)?;
+/// The GCC that `request` pairs `target` with, `request` being the `[clang] gcc` of the
+/// `.cxvmrc` at `rc`: `None` unless `target` is a clang and a GCC is asked for. Fails if that
+/// GCC is not installed.
+fn paired_gcc(
+    store: &Store,
+    target: &Target,
+    request: Option<&Spec>,
+    rc: &Path,
+) -> Result<Option<Installed>> {
+    let (true, Some(spec)) = (target.is_clang(), request) else {
+        return Ok(None);
+    };
+    match store.find(spec)? {
+        Some(gcc) => Ok(Some(gcc)),
+        None => Err(not_installed_error(store, spec, clang_gcc_context(rc))?),
+    }
+}
+
+/// Where a pairing comes from, for messages: `` (`[clang] gcc` in /p/.cxvmrc)``.
+fn clang_gcc_context(rc: &Path) -> String {
+    format!(" (`[clang] gcc` in {})", rc.display())
+}
+
+/// The pairing that applies in the current directory for `target`: `[clang] gcc` of the
+/// nearest `.cxvmrc`, whatever selected the clang itself.
+fn project_paired_gcc(ctx: &Context, store: &Store, target: &Target) -> Result<Option<Installed>> {
+    if !target.is_clang() {
+        return Ok(None);
+    }
+    let Some(rc) = project::find_rc(&ctx.cwd) else {
+        return Ok(None);
+    };
+    let request = ProjectRc::load(&rc)?.clang_gcc;
+    paired_gcc(store, target, request.as_ref(), &rc)
+}
+
+/// Regenerates `<root>/.cxvm/` for `target` as `rc`, the project's `.cxvmrc`, asks: the
+/// pairing of a clang, and the integrations.
+fn generate_project(ctx: &Context, root: &Path, target: &Target, rc: &ProjectRc) -> Result<()> {
+    let rc_path = root.join(project::RC_FILE);
+    let gcc = paired_gcc(&ctx.store(), target, rc.clang_gcc.as_ref(), &rc_path)?;
+    let activation = target.activation(ctx, gcc.as_ref())?;
     integrations::write_project_dir(root, &activation, target.prefix())?;
     println!(
         "Generated {} (toolchain.cmake, env{})",
@@ -526,29 +618,82 @@ fn generate_project(ctx: &Context, root: &Path, target: &Target) -> Result<()> {
             ""
         }
     );
-    if let Gitignore::Added(path) = integrations::ensure_gitignored(root)? {
+    if let Some(pairing) = &activation.pairing {
+        println!(
+            "Clang uses the headers and libstdc++ of {} ({})",
+            pairing.gcc, pairing.flag
+        );
+    }
+    if rc.integrations.gitignore
+        && let Gitignore::Added(path) = integrations::ensure_gitignored(root)?
+    {
         println!("Added {}/ to {}", integrations::PROJECT_DIR, path.display());
     }
     Ok(())
 }
 
-/// `cxvm use`: pin `id` in the current project and regenerate `.cxvm/`.
-pub fn use_(ctx: &Context, id: &str) -> Result<()> {
+/// What `cxvm use --gcc <id>` writes to `[clang] gcc`: the exact id of an installed GCC, or
+/// `system`. Fails unless `target` is a clang.
+fn pairing_request(store: &Store, target: &Target, gcc: &str) -> Result<Spec> {
+    let spec: Spec = gcc.parse()?;
+    if matches!(
+        spec,
+        Spec::Toolchain {
+            kind: Kind::Clang,
+            ..
+        }
+    ) {
+        return Err(Error::Usage {
+            message: format!("`--gcc {gcc}` does not name a GCC"),
+            hint: "name the GCC whose libstdc++ clang should use, e.g. `--gcc gcc@13`, or \
+                   `--gcc system` to let clang pick one on the host"
+                .into(),
+        });
+    }
+    if !target.is_clang() {
+        return Err(Error::Usage {
+            message: format!(
+                "`--gcc` pairs a clang with a GCC, and {} is not a clang cxvm manages",
+                target.spec()
+            ),
+            hint: "drop `--gcc`: a GCC uses its own libstdc++, and `system` is left as it is"
+                .into(),
+        });
+    }
+    match &spec {
+        Spec::System => Ok(spec),
+        Spec::Toolchain { .. } => match store.find(&spec)? {
+            Some(gcc) => Ok(Spec::from(gcc.id)),
+            None => Err(not_installed_error(store, &spec, " (--gcc)".into())?),
+        },
+    }
+}
+
+/// `cxvm use`: pin `id` in the current project and regenerate `.cxvm/`. With `gcc`, also pair
+/// the clang being pinned with that GCC.
+pub fn use_(ctx: &Context, id: &str, gcc: Option<&str>) -> Result<()> {
     let spec: Spec = id.parse()?;
-    let target = Target::find(&ctx.store(), &spec, String::new())?;
-    // Fail on an incomplete toolchain before touching any file.
-    target.activation(ctx)?;
+    let store = ctx.store();
+    let target = Target::find(&store, &spec, String::new())?;
+    let exact = target.spec();
+    let clang_gcc = gcc
+        .map(|gcc| pairing_request(&store, &target, gcc))
+        .transpose()?;
 
     let root = project::project_root(&ctx.cwd);
     let rc = root.join(project::RC_FILE);
-    let exact = target.spec();
-    project::write_rc(&rc, &exact, None)?;
+    let pending = project::edit_rc(&rc, &exact, clang_gcc.as_ref())?;
+    // Fail on an incomplete toolchain or pairing before touching any file.
+    let paired = paired_gcc(&store, &target, pending.rc.clang_gcc.as_ref(), &rc)?;
+    target.activation(ctx, paired.as_ref())?;
+
+    pending.write()?;
     if exact == spec {
         println!("Pinned {exact} in {}", rc.display());
     } else {
         println!("Pinned {exact} (from {spec}) in {}", rc.display());
     }
-    generate_project(ctx, &root, &target)?;
+    generate_project(ctx, &root, &target, &pending.rc)?;
 
     let build = format!("build/{}", exact.to_string().replace('@', "-"));
     let toolchain_file = format!("{}/toolchain.cmake", integrations::PROJECT_DIR);
@@ -659,16 +804,32 @@ pub fn install_pinned(ctx: &Context, build: Option<&source::Options>) -> Result<
                 .into(),
         });
     };
-    let spec = project::ProjectRc::load(&rc)?.compiler;
+    let project = ProjectRc::load(&rc)?;
     let context = format!(" (set by {})", rc.display());
-    let store = ctx.store();
-    let target = match Target::find(&store, &spec, context) {
+    let target = find_or_install(ctx, &project.compiler, context, build)?;
+    if let (true, Some(gcc)) = (target.is_clang(), &project.clang_gcc) {
+        find_or_install(ctx, gcc, clang_gcc_context(&rc), build)?;
+    }
+    let root = rc.parent().unwrap_or(&ctx.cwd).to_owned();
+    generate_project(ctx, &root, &target, &project)
+}
+
+/// The toolchain `spec` selects, installed first if it is missing and the catalog has it.
+/// `context` goes into the not-installed error; with `build`, a missing toolchain is built
+/// from source.
+fn find_or_install(
+    ctx: &Context,
+    spec: &Spec,
+    context: String,
+    build: Option<&source::Options>,
+) -> Result<Target> {
+    match Target::find(&ctx.store(), spec, context) {
         Ok(target) => {
             println!("{} is available", target.spec());
-            target
+            Ok(target)
         }
         Err(err @ Error::NotInstalled { .. }) => {
-            let installable = match &spec {
+            let installable = match spec {
                 Spec::Toolchain { version, .. } => version.suffix().is_none(),
                 Spec::System => false,
             };
@@ -677,17 +838,15 @@ pub fn install_pinned(ctx: &Context, build: Option<&source::Options>) -> Result<
             }
             let catalog = ctx.catalog()?;
             let command = "cxvm install --from-source";
-            match pick_release(ctx, &catalog, &spec, build, command)? {
-                Some((release, how)) => {
-                    Target::Toolchain(install_release(ctx, &catalog, release, how)?)
-                }
-                None => return Err(err),
+            match pick_release(ctx, &catalog, spec, build, command)? {
+                Some((release, how)) => Ok(Target::Toolchain(install_release(
+                    ctx, &catalog, release, how,
+                )?)),
+                None => Err(err),
             }
         }
-        Err(err) => return Err(err),
-    };
-    let root = rc.parent().unwrap_or(&ctx.cwd).to_owned();
-    generate_project(ctx, &root, &target)
+        Err(err) => Err(err),
+    }
 }
 
 /// `cxvm install <id>`: download a release from the catalog and install it in the store, or
@@ -860,7 +1019,8 @@ fn install_release(
                  Either there is none (install g++ or your distribution's libstdc++ development \
                  package), or its libstdc++ is too new for this clang: pass an older one with \
                  `--gcc-install-dir=/usr/lib/gcc/x86_64-linux-gnu/<version>` (clang 16 and \
-                 later). Pinning that GCC in .cxvmrc arrives in M6"
+                 later), or let cxvm do it in a project: `cxvm use <clang id> --gcc <gcc id>` \
+                 pairs this clang with a GCC from `cxvm list`"
             }
             (Kind::Gcc, How::Prebuilt) => {
                 "this GCC builds against the host's C library. Either its headers are missing \
@@ -1207,7 +1367,10 @@ pub fn global(ctx: &Context, id: &str) -> Result<()> {
 /// The activation of the toolchain that is active here; fails if it is not installed.
 fn active(ctx: &Context) -> Result<Activation> {
     let Resolution { spec, source } = ctx.resolve()?;
-    Target::find(&ctx.store(), &spec, format!(" ({source})"))?.activation(ctx)
+    let store = ctx.store();
+    let target = Target::find(&store, &spec, format!(" ({source})"))?;
+    let gcc = project_paired_gcc(ctx, &store, &target)?;
+    target.activation(ctx, gcc.as_ref())
 }
 
 /// `cxvm env`: print exports for `eval`. `shell` defaults to the one in `$SHELL`.
@@ -1247,10 +1410,8 @@ pub fn exec(ctx: &Context, cmd: &[String]) -> Result<()> {
         })?;
         command.env("PATH", path);
     }
-    for (name, path) in [("CC", &activation.cc), ("CXX", &activation.cxx)] {
-        if let Some(path) = path {
-            command.env(name, path);
-        }
+    for (name, value) in activation.compiler_env() {
+        command.env(name, value);
     }
     let err = files::retry_busy(|| Err::<(), _>(command.exec())).unwrap_err();
     Err(Error::Usage {

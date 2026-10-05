@@ -211,7 +211,7 @@ fn gcc_toolchain_files_carry_the_libstdcxx_rpath() {
 }
 
 #[test]
-fn clang_toolchain_files_have_no_rpath_yet() {
+fn unpaired_clang_toolchain_files_have_no_rpath() {
     let s = Sandbox::new();
     s.install("clang", "18.1.8");
     s.cxvm("").args(["use", "clang@18.1.8"]).assert().success();

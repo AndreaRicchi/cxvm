@@ -84,6 +84,10 @@ pub enum Command {
     Use {
         /// Toolchain id; partial versions resolve to the highest installed match
         id: String,
+        /// With a clang: the GCC whose headers and libstdc++ it uses in this project, or
+        /// `system` to let clang pick one on the host; written to `[clang] gcc`
+        #[arg(long, value_name = "ID")]
+        gcc: Option<String>,
     },
     /// Set the default toolchain used outside projects
     Global {
@@ -179,7 +183,9 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Remove { id, force } => {
             return commands::remove(&Context::from_process_env()?, &id, force);
         }
-        Command::Use { id } => return commands::use_(&Context::from_process_env()?, &id),
+        Command::Use { id, gcc } => {
+            return commands::use_(&Context::from_process_env()?, &id, gcc.as_deref());
+        }
         Command::Global { id } => return commands::global(&Context::from_process_env()?, &id),
         Command::Exec { cmd } => return commands::exec(&Context::from_process_env()?, &cmd),
         Command::Env { shell } => {

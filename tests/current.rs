@@ -209,6 +209,7 @@ fn json_for_an_installed_toolchain() {
             "source_path": rc,
             "installed": true,
             "path": prefix,
+            "clang_gcc": null,
         })
     );
 }
@@ -233,6 +234,7 @@ fn json_for_system_and_env() {
             "source_path": null,
             "installed": true,
             "path": s.bin().join("cc"),
+            "clang_gcc": null,
         })
     );
 }
@@ -253,6 +255,7 @@ fn json_for_a_missing_toolchain_still_prints_and_fails() {
             "source_path": config,
             "installed": false,
             "path": null,
+            "clang_gcc": null,
         })
     );
 }

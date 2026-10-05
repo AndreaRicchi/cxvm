@@ -1,7 +1,7 @@
 //! Generated project files: `toolchain.cmake`, `env`, `.gitignore` entry (M2),
 //! `CMakeUserPresets.json` and VS Code settings (M6).
 
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::fmt::Write as _;
 use std::fs;
 use std::io;
@@ -26,38 +26,140 @@ pub struct Activation {
     pub cc: Option<PathBuf>,
     /// C++ compiler; `None` only for `system` without a `c++` on `PATH`.
     pub cxx: Option<PathBuf>,
-    /// Directory holding the toolchain's `libstdc++.so.6`, baked in as an rpath; `None` when
-    /// the dynamic loader searches it anyway.
+    /// Directory holding the `libstdc++.so.6` that programs must load, baked in as an rpath:
+    /// the toolchain's own for GCC, the paired GCC's for clang. `None` when the dynamic
+    /// loader searches it anyway.
     pub rpath: Option<PathBuf>,
+    /// Clang only: the GCC it is told to use instead of the newest one on the host.
+    pub pairing: Option<Pairing>,
+}
+
+/// A clang told to use one GCC's headers, libstdc++ and runtime files.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pairing {
+    /// The GCC, e.g. `gcc@13.3.0`.
+    pub gcc: String,
+    /// The driver option selecting it, which every compiler call must carry.
+    pub flag: String,
+}
+
+/// The first clang release with `--gcc-install-dir`; older ones only have `--gcc-toolchain`
+/// (see docs/backends.md).
+const GCC_INSTALL_DIR_SINCE: u32 = 16;
+
+impl Pairing {
+    fn new(clang: &Installed, gcc: &Installed) -> Result<Self> {
+        check_drivers(gcc)?;
+        let cannot = |why: String, hint: &str| Error::Usage {
+            message: format!("cannot pair {} with {}: {why}", clang.id, gcc.id),
+            hint: format!(
+                "{hint}, or set `gcc = \"system\"` in the `[clang]` table of .cxvmrc to let \
+                 clang pick a GCC on the host"
+            ),
+        };
+        let Some(install_dir) = detect::gcc_install_dir(&gcc.cc) else {
+            return Err(cannot(
+                format!(
+                    "`{} -print-libgcc-file-name` does not name its install directory",
+                    gcc.cc.display()
+                ),
+                "pair clang with another GCC from `cxvm list`",
+            ));
+        };
+        if clang.id.version().major() >= GCC_INSTALL_DIR_SINCE {
+            return Ok(Self {
+                gcc: gcc.id.to_string(),
+                flag: format!("--gcc-install-dir={}", install_dir.display()),
+            });
+        }
+
+        // `--gcc-toolchain=<prefix>` makes clang search `<prefix>/lib/gcc/<triple>/` and take
+        // the highest version it finds there.
+        let in_lib_gcc =
+            install_dir.ancestors().nth(2).and_then(Path::file_name) == Some("gcc".as_ref());
+        let Some(prefix) = install_dir.ancestors().nth(4).filter(|_| in_lib_gcc) else {
+            return Err(cannot(
+                format!(
+                    "{} is not `<prefix>/lib/gcc/<triple>/<version>`, the only layout a clang \
+                     before {GCC_INSTALL_DIR_SINCE} can be pointed at",
+                    install_dir.display()
+                ),
+                "use clang 16 or later, which has `--gcc-install-dir`",
+            ));
+        };
+        let mut others: Vec<String> = install_dir
+            .parent()
+            .and_then(|triple| fs::read_dir(triple).ok())
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.path() != install_dir && entry.path().join("crtbegin.o").exists())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        if !others.is_empty() {
+            others.sort();
+            return Err(cannot(
+                format!(
+                    "{} holds other GCCs too ({}), and a clang before {GCC_INSTALL_DIR_SINCE} \
+                     always takes the newest in a prefix",
+                    prefix.display(),
+                    others.join(", ")
+                ),
+                "pair it with a GCC that has a prefix of its own (`cxvm install \
+                 gcc@<version>`), use clang 16 or later",
+            ));
+        }
+        Ok(Self {
+            gcc: gcc.id.to_string(),
+            flag: format!("--gcc-toolchain={}", prefix.display()),
+        })
+    }
+}
+
+/// Fails if one of the toolchain's drivers is missing.
+fn check_drivers(toolchain: &Installed) -> Result<()> {
+    let Installed {
+        id, path, cc, cxx, ..
+    } = toolchain;
+    for driver in [cc, cxx] {
+        if !files::is_executable(driver) {
+            return Err(Error::Usage {
+                message: format!(
+                    "{id} is incomplete: {} is missing or not executable",
+                    driver.display()
+                ),
+                hint: if toolchain.linked {
+                    format!(
+                        "restore the install in {}, or `cxvm unlink {id}`",
+                        path.display()
+                    )
+                } else {
+                    format!("delete {} and install it again", path.display())
+                },
+            });
+        }
+    }
+    Ok(())
+}
+
+/// The directory of the `libstdc++.so.6` that `cxx` links, if programs need an rpath to load
+/// that one.
+fn runtime_dir(cxx: &Path) -> Option<PathBuf> {
+    detect::libstdcxx_dir(cxx).filter(|dir| !is_default_library_dir(dir))
 }
 
 impl Activation {
-    /// Activation for an installed or linked toolchain. Fails if a driver is missing.
-    pub fn for_toolchain(toolchain: &Installed) -> Result<Self> {
-        let Installed {
-            id, path, cc, cxx, ..
-        } = toolchain;
-        for driver in [cc, cxx] {
-            if !files::is_executable(driver) {
-                return Err(Error::Usage {
-                    message: format!(
-                        "{id} is incomplete: {} is missing or not executable",
-                        driver.display()
-                    ),
-                    hint: if toolchain.linked {
-                        format!(
-                            "restore the install in {}, or `cxvm unlink {id}`",
-                            path.display()
-                        )
-                    } else {
-                        format!("delete {} and install it again", path.display())
-                    },
-                });
+    /// Activation for an installed or linked toolchain; `gcc` is the GCC a clang is paired
+    /// with, if any. Fails if a driver is missing or the pairing cannot be expressed.
+    pub fn for_toolchain(toolchain: &Installed, gcc: Option<&Installed>) -> Result<Self> {
+        check_drivers(toolchain)?;
+        let Installed { id, cc, cxx, .. } = toolchain;
+        let (pairing, rpath) = match (id.kind(), gcc) {
+            (Kind::Gcc, _) => (None, runtime_dir(cxx)),
+            (Kind::Clang, None) => (None, None),
+            (Kind::Clang, Some(gcc)) => {
+                (Some(Pairing::new(toolchain, gcc)?), runtime_dir(&gcc.cxx))
             }
-        }
-        let rpath = match id.kind() {
-            Kind::Gcc => detect::libstdcxx_dir(cxx).filter(|dir| !is_default_library_dir(dir)),
-            Kind::Clang => None,
         };
         Ok(Self {
             label: id.to_string(),
@@ -65,7 +167,23 @@ impl Activation {
             cc: Some(cc.clone()),
             cxx: Some(cxx.clone()),
             rpath,
+            pairing,
         })
+    }
+
+    /// The values of `CC` and `CXX`: each compiler, followed by the pairing option if there
+    /// is one, as in `CC="gcc -m32"`.
+    pub fn compiler_env(&self) -> impl Iterator<Item = (&'static str, OsString)> + '_ {
+        [("CC", &self.cc), ("CXX", &self.cxx)]
+            .into_iter()
+            .filter_map(|(name, path)| {
+                let mut value = path.clone()?.into_os_string();
+                if let Some(pairing) = &self.pairing {
+                    value.push(" ");
+                    value.push(&pairing.flag);
+                }
+                Some((name, value))
+            })
     }
 
     /// Activation for `system`: the `cc` and `c++` on `path_var`, skipping cxvm's own dirs.
@@ -76,6 +194,7 @@ impl Activation {
             cc: toolchain::find_system("cc", path_var, store),
             cxx: toolchain::find_system("c++", path_var, store),
             rpath: None,
+            pairing: None,
         }
     }
 }
@@ -111,12 +230,25 @@ pub fn render_toolchain_cmake(activation: &Activation) -> String {
          set(CXVM_TOOLCHAIN {})\n",
         cmake_string(label)
     );
+    // The option rides with the compiler itself, not in `CMAKE_<LANG>_FLAGS_INIT`, which a
+    // `-DCMAKE_CXX_FLAGS=…` on the command line would silently replace.
+    let option = match &activation.pairing {
+        Some(Pairing { gcc, flag }) => {
+            writeln!(
+                out,
+                "# Clang uses the headers and libstdc++ of {gcc} (`[clang] gcc` in .cxvmrc)"
+            )
+            .expect("writing to a String cannot fail");
+            format!(" {}", cmake_string(flag))
+        }
+        None => String::new(),
+    };
     for (variable, name, compiler) in [
         ("CMAKE_C_COMPILER  ", "cc", &activation.cc),
         ("CMAKE_CXX_COMPILER", "c++", &activation.cxx),
     ] {
         match compiler {
-            Some(path) => writeln!(out, "set({variable} {})", cmake_path(path)),
+            Some(path) => writeln!(out, "set({variable} {}{option})", cmake_path(path)),
             None => writeln!(
                 out,
                 "# no `{name}` found on PATH when this was generated; CMake picks the compiler"
@@ -126,9 +258,13 @@ pub fn render_toolchain_cmake(activation: &Activation) -> String {
     }
     if let Some(rpath) = &activation.rpath {
         let flag = cmake_string(&format!("-Wl,-rpath,{}", rpath.display()));
+        let whose = match &activation.pairing {
+            Some(pairing) => format!("the libstdc++ of {}", pairing.gcc),
+            None => "this toolchain's libstdc++".to_owned(),
+        };
         writeln!(
             out,
-            "# Programs must load this toolchain's libstdc++ at runtime, not the system one\n\
+            "# Programs must load {whose} at runtime, not the system one\n\
              set(CMAKE_EXE_LINKER_FLAGS_INIT    {flag})\n\
              set(CMAKE_SHARED_LINKER_FLAGS_INIT {flag})\n\
              set(CMAKE_MODULE_LINKER_FLAGS_INIT {flag})"
@@ -173,10 +309,8 @@ pub fn render_env(activation: &Activation, shell: Shell) -> String {
             Shell::Fish => format!("set -gx PATH {bin} $PATH\n"),
         };
     }
-    for (name, path) in [("CC", &activation.cc), ("CXX", &activation.cxx)] {
-        if let Some(path) = path {
-            out += &set(name, &path.display().to_string());
-        }
+    for (name, value) in activation.compiler_env() {
+        out += &set(name, &value.to_string_lossy());
     }
     out
 }
@@ -311,6 +445,7 @@ mod tests {
             cc: Some("/s/toolchains/gcc/13.3.0/bin/gcc".into()),
             cxx: Some("/s/toolchains/gcc/13.3.0/bin/g++".into()),
             rpath: Some("/s/toolchains/gcc/13.3.0/lib64".into()),
+            pairing: None,
         }
     }
 
@@ -321,6 +456,7 @@ mod tests {
             cc: Some("/usr/bin/cc".into()),
             cxx: Some("/usr/bin/c++".into()),
             rpath: None,
+            pairing: None,
         }
     }
 
@@ -363,10 +499,50 @@ mod tests {
             cc: Some("/s/clang/bin/clang".into()),
             cxx: Some("/s/clang/bin/clang++".into()),
             rpath: None,
+            pairing: None,
         };
         let text = render_toolchain_cmake(&clang);
         assert!(text.contains("set(CMAKE_CXX_COMPILER \"/s/clang/bin/clang++\")\n"));
         assert!(!text.contains("LINKER_FLAGS"), "{text}");
+    }
+
+    #[test]
+    fn toolchain_file_for_a_paired_clang_passes_the_option_with_the_compiler() {
+        let clang = Activation {
+            label: "clang@17.0.6".into(),
+            bin: Some("/s/clang/bin".into()),
+            cc: Some("/s/clang/bin/clang".into()),
+            cxx: Some("/s/clang/bin/clang++".into()),
+            rpath: Some("/s/gcc/lib64".into()),
+            pairing: Some(Pairing {
+                gcc: "gcc@13.3.0".into(),
+                flag: "--gcc-install-dir=/s/gcc/lib/gcc/x86_64-pc-linux-gnu/13.3.0".into(),
+            }),
+        };
+        assert_eq!(
+            render_toolchain_cmake(&clang),
+            "# Generated by cxvm — do not edit. Toolchain: clang@17.0.6\n\
+             # Regenerate with `cxvm use <id>` or `cxvm install`.\n\
+             set(CXVM_TOOLCHAIN \"clang@17.0.6\")\n\
+             # Clang uses the headers and libstdc++ of gcc@13.3.0 (`[clang] gcc` in .cxvmrc)\n\
+             set(CMAKE_C_COMPILER   \"/s/clang/bin/clang\" \
+             \"--gcc-install-dir=/s/gcc/lib/gcc/x86_64-pc-linux-gnu/13.3.0\")\n\
+             set(CMAKE_CXX_COMPILER \"/s/clang/bin/clang++\" \
+             \"--gcc-install-dir=/s/gcc/lib/gcc/x86_64-pc-linux-gnu/13.3.0\")\n\
+             # Programs must load the libstdc++ of gcc@13.3.0 at runtime, not the system one\n\
+             set(CMAKE_EXE_LINKER_FLAGS_INIT    \"-Wl,-rpath,/s/gcc/lib64\")\n\
+             set(CMAKE_SHARED_LINKER_FLAGS_INIT \"-Wl,-rpath,/s/gcc/lib64\")\n\
+             set(CMAKE_MODULE_LINKER_FLAGS_INIT \"-Wl,-rpath,/s/gcc/lib64\")\n"
+        );
+        assert_eq!(
+            render_env(&clang, Shell::Posix),
+            "export CXVM_TOOLCHAIN='clang@17.0.6'\n\
+             export PATH='/s/clang/bin':\"$PATH\"\n\
+             export CC='/s/clang/bin/clang \
+             --gcc-install-dir=/s/gcc/lib/gcc/x86_64-pc-linux-gnu/13.3.0'\n\
+             export CXX='/s/clang/bin/clang++ \
+             --gcc-install-dir=/s/gcc/lib/gcc/x86_64-pc-linux-gnu/13.3.0'\n"
+        );
     }
 
     #[test]
