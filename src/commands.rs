@@ -643,7 +643,8 @@ fn install_release(ctx: &Context, release: &Release) -> Result<Installed> {
         release.id,
         human_size(release.size)
     );
-    let report = backends::install(&store, &lock, release)?;
+    let backend = backends::backend_for(release.id.kind());
+    let report = backends::install(&store, &lock, release, backend)?;
     drop(lock);
     let toolchain = report.toolchain;
     if let Some(problem) = report.warning {

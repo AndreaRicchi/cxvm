@@ -2,8 +2,8 @@
 //!
 //! Releases come from the embedded [`catalog`](crate::catalog). [`install`] runs the steps every
 //! backend shares: download and verify the archive, let the [`Backend`] turn it into a prefix
-//! in `staging/`, check that the compiler runs, record `.cxvm-meta.toml` and move the prefix
-//! into the store in one rename.
+//! in `staging/` (by unpacking it, or by building it), check that the compiler runs, record
+//! `.cxvm-meta.toml` and move the prefix into the store in one rename.
 
 pub mod download;
 pub mod extract;
@@ -22,9 +22,27 @@ pub trait Backend {
     /// Name recorded in `.cxvm-meta.toml`.
     fn name(&self) -> &'static str;
 
-    /// Builds the prefix for `release` in `prefix`, a new directory in `staging/`, from its
-    /// verified `archive`. The error is a reason for the user.
-    fn prepare(&self, release: &Release, archive: &Path, prefix: &Path) -> Result<(), String>;
+    /// Builds the prefix for `release` from its verified `archive` and returns it. Everything
+    /// it writes goes below `work`, a path in `staging/` that does not exist yet and that
+    /// [`install`] deletes afterwards.
+    fn prepare(&self, release: &Release, archive: &Path, work: &Path) -> Result<PathBuf>;
+
+    /// Adds what only this backend knows to the toolchain's metadata.
+    fn describe(&self, _meta: &mut Meta) {}
+}
+
+/// Unpacks a prebuilt `archive` of `release` into a prefix below `work`.
+fn unpack_prebuilt(release: &Release, archive: &Path, work: &Path) -> Result<PathBuf> {
+    let prefix = work.join("prefix");
+    extract::unpack_archive(archive, &prefix).map_err(|reason| Error::Install {
+        id: release.id.to_string(),
+        reason,
+        hint: format!(
+            "the archive may be damaged: delete {} and run the same command again",
+            archive.display()
+        ),
+    })?;
+    Ok(prefix)
 }
 
 /// Official LLVM release archives (see docs/backends.md).
@@ -35,8 +53,8 @@ impl Backend for LlvmPrebuilt {
         "llvm-prebuilt"
     }
 
-    fn prepare(&self, _release: &Release, archive: &Path, prefix: &Path) -> Result<(), String> {
-        extract::unpack_archive(archive, prefix)
+    fn prepare(&self, release: &Release, archive: &Path, work: &Path) -> Result<PathBuf> {
+        unpack_prebuilt(release, archive, work)
     }
 }
 
@@ -48,12 +66,12 @@ impl Backend for XpackGcc {
         "xpack-prebuilt"
     }
 
-    fn prepare(&self, _release: &Release, archive: &Path, prefix: &Path) -> Result<(), String> {
-        extract::unpack_archive(archive, prefix)
+    fn prepare(&self, release: &Release, archive: &Path, work: &Path) -> Result<PathBuf> {
+        unpack_prebuilt(release, archive, work)
     }
 }
 
-/// The backend that installs releases of `kind` from the catalog.
+/// The backend that installs prebuilt releases of `kind` from the catalog.
 pub fn backend_for(kind: Kind) -> &'static dyn Backend {
     match kind {
         Kind::Clang => &LlvmPrebuilt,
@@ -104,14 +122,18 @@ pub struct Report {
     pub warning: Option<String>,
 }
 
-/// Installs `release` into the store. On failure nothing is left in `toolchains/`, and the
-/// verified archive stays cached for the next attempt.
-pub fn install(store: &Store, lock: &StoreLock, release: &Release) -> Result<Report> {
+/// Installs `release` into the store with `backend`. On failure nothing is left in
+/// `toolchains/`, and the verified archive stays cached for the next attempt.
+pub fn install(
+    store: &Store,
+    lock: &StoreLock,
+    release: &Release,
+    backend: &dyn Backend,
+) -> Result<Report> {
     let id = &release.id;
-    let backend = backend_for(id.kind());
     let paths = store.paths();
     let archive = download::fetch(release.download(), &paths.downloads_dir())?;
-    let staged = store.staging_path(&format!("{}-{}", id.kind(), id.version()));
+    let work = store.staging_path(&format!("{}-{}", id.kind(), id.version()));
     let fail = |reason: String, hint: String| Error::Install {
         id: id.to_string(),
         reason,
@@ -119,17 +141,7 @@ pub fn install(store: &Store, lock: &StoreLock, release: &Release) -> Result<Rep
     };
 
     let result = (|| {
-        backend
-            .prepare(release, &archive, &staged)
-            .map_err(|reason| {
-                fail(
-                    reason,
-                    format!(
-                        "the archive may be damaged: delete {} and run the same command again",
-                        archive.display()
-                    ),
-                )
-            })?;
+        let staged = backend.prepare(release, &archive, &work)?;
 
         let (cc, cxx) = detect::compilers(&staged, id.kind());
         let mut missing: Vec<String> = Vec::new();
@@ -179,7 +191,7 @@ pub fn install(store: &Store, lock: &StoreLock, release: &Release) -> Result<Rep
 
         let target = paths.toolchain_dir(id);
         let (final_cc, final_cxx) = detect::compilers(&target, id.kind());
-        Meta {
+        let mut meta = Meta {
             id: id.to_string(),
             backend: backend.name().into(),
             url: release.url.clone(),
@@ -190,8 +202,11 @@ pub fn install(store: &Store, lock: &StoreLock, release: &Release) -> Result<Rep
             version: detected.version_line,
             libstdcxx_dir: runtime_dirs.as_ref().map(|(lib, _)| target.join(lib)),
             gcc_install_dir: runtime_dirs.as_ref().map(|(_, gcc)| target.join(gcc)),
-        }
-        .write(&staged)?;
+            host_compiler: None,
+            configure_args: Vec::new(),
+        };
+        backend.describe(&mut meta);
+        meta.write(&staged)?;
         let path = store.commit(lock, &staged, id)?;
         Ok(Report {
             toolchain: Installed {
@@ -205,8 +220,7 @@ pub fn install(store: &Store, lock: &StoreLock, release: &Release) -> Result<Rep
             warning,
         })
     })();
-    if result.is_err() {
-        let _ = store::remove_all(&staged);
-    }
+    // What is left of the work directory once the prefix has moved out of it, or all of it.
+    let _ = store::remove_all(&work);
     result
 }

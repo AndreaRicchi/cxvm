@@ -313,6 +313,12 @@ pub struct Meta {
     /// GCC only: its install dir, `lib/gcc/<triple>/<version>`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gcc_install_dir: Option<PathBuf>,
+    /// Built from source only: first line of `--version` of the compiler it was built with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_compiler: Option<String>,
+    /// Built from source only: the arguments `configure` was run with.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub configure_args: Vec<String>,
 }
 
 impl Meta {
@@ -642,6 +648,8 @@ mod tests {
             version: "clang version 19.1.0".into(),
             libstdcxx_dir: None,
             gcc_install_dir: None,
+            host_compiler: None,
+            configure_args: Vec::new(),
         };
         meta.write(dir.path()).unwrap();
         let text = fs::read_to_string(dir.path().join(META_FILE)).unwrap();
@@ -657,7 +665,18 @@ mod tests {
             ..meta
         };
         gcc.write(dir.path()).unwrap();
-        assert_eq!(Meta::load(dir.path()).unwrap(), Some(gcc));
+        assert_eq!(Meta::load(dir.path()).unwrap(), Some(gcc.clone()));
+        let text = fs::read_to_string(dir.path().join(META_FILE)).unwrap();
+        assert!(!text.contains("configure_args"), "{text}");
+
+        let built = Meta {
+            backend: "gnu-source".into(),
+            host_compiler: Some("gcc (Ubuntu 15.2.0-16ubuntu1) 15.2.0".into()),
+            configure_args: vec!["--prefix=/s/toolchains/gcc/13.3.0".into()],
+            ..gcc
+        };
+        built.write(dir.path()).unwrap();
+        assert_eq!(Meta::load(dir.path()).unwrap(), Some(built));
     }
 
     #[test]
