@@ -9,8 +9,9 @@ even when `cxvm` is not on `PATH`.
 
 **Status: pre-alpha.** Pinning per project, linking compilers you already have, and installing
 prebuilt releases work: official LLVM builds of Clang (`cxvm install clang@19`) and xPack builds
-of GCC (`cxvm install gcc@13`). Building GCC from source comes next. The
-specification and milestone plan live in [PLAN.md](PLAN.md).
+of GCC (`cxvm install gcc@13`). GCC releases without a prebuilt archive are built from source
+(`cxvm install gcc@10 --from-source`). Pairing Clang with a chosen GCC and editor integration
+come next. The specification and milestone plan live in [PLAN.md](PLAN.md).
 
 ## Building
 
