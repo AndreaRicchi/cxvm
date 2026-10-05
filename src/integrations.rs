@@ -1,5 +1,5 @@
-//! Generated project files: `toolchain.cmake`, `env`, `.gitignore` entry (M2),
-//! `CMakeUserPresets.json` and VS Code settings (M6).
+//! Generated project files: `toolchain.cmake`, `env`, `.gitignore` entry (M2), the pairing of
+//! clang with a GCC, `CMakeUserPresets.json` and VS Code settings (M6).
 
 mod json;
 pub mod presets;

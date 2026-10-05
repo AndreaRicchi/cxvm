@@ -115,12 +115,6 @@ fn merge(path: &Path, text: &str, request: &Request) -> Result<(String, Vec<Stri
             request.build_dir
         )),
     }
-    if arguments.elements().is_empty() {
-        // Only possible if cxvm created it just above and had nothing to add.
-        if let Some(prop) = doc.object.get("clangd.arguments") {
-            prop.remove();
-        }
-    }
 
     // CMake Tools: one build directory per toolchain, configured with the toolchain file.
     match json::string_in(&doc.object, "cmake.buildDirectory") {
