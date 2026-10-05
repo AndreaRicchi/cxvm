@@ -9,16 +9,16 @@ use std::time::Duration;
 use indicatif::{ProgressBar, ProgressStyle};
 use sha2::{Digest, Sha256};
 
-use crate::catalog::Release;
+use crate::catalog::Download;
 use crate::error::{Error, Result};
 
-/// Returns the verified archive of `release` in `dir`, downloading what is missing.
+/// Returns the verified file `release` describes, in `dir`, downloading what is missing.
 ///
 /// The download goes to `<asset>.part`, which a later run resumes, and is renamed to `<asset>`
 /// only once its size and sha256 match. A cached archive is checked again before it is reused;
 /// one that does not match is deleted.
-pub fn fetch(release: &Release, dir: &Path) -> Result<PathBuf> {
-    let archive = dir.join(&release.asset);
+pub fn fetch(release: Download<'_>, dir: &Path) -> Result<PathBuf> {
+    let archive = dir.join(release.asset);
     let part = dir.join(format!("{}.part", release.asset));
     let io_error = |action, path: &Path| {
         let path = path.to_owned();
@@ -54,13 +54,13 @@ pub fn fetch(release: &Release, dir: &Path) -> Result<PathBuf> {
 
     if len < release.size {
         let download_error = |reason: String| Error::Download {
-            url: release.url.clone(),
+            url: release.url.to_owned(),
             reason,
             hint: "check your network connection and run the same command again; \
                    the download resumes where it stopped"
                 .into(),
         };
-        let mut request = agent().get(&release.url);
+        let mut request = agent().get(release.url);
         if len > 0 {
             request = request.header("Range", format!("bytes={len}-"));
         }
@@ -97,7 +97,7 @@ pub fn fetch(release: &Release, dir: &Path) -> Result<PathBuf> {
                 drop(file);
                 let _ = fs::remove_file(&part);
                 return Err(Error::Download {
-                    url: release.url.clone(),
+                    url: release.url.to_owned(),
                     reason: format!(
                         "the server sent more than the expected {} bytes",
                         release.size
@@ -125,7 +125,7 @@ pub fn fetch(release: &Release, dir: &Path) -> Result<PathBuf> {
     if actual != release.sha256 {
         let _ = fs::remove_file(&part);
         return Err(Error::Download {
-            url: release.url.clone(),
+            url: release.url.to_owned(),
             reason: format!(
                 "sha256 mismatch: expected {}, got {actual}; the file was deleted",
                 release.sha256
@@ -148,7 +148,7 @@ fn agent() -> ureq::Agent {
 }
 
 /// A progress bar on stderr when it is a terminal; otherwise one line saying what is downloaded.
-fn progress_bar(release: &Release, start: u64) -> ProgressBar {
+fn progress_bar(release: Download<'_>, start: u64) -> ProgressBar {
     let what = if start > 0 {
         format!("Resuming the download of {}", release.asset)
     } else {
@@ -200,6 +200,7 @@ fn hex(hasher: Sha256) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::catalog::Release;
 
     /// A release whose URL refuses connections, so any network access fails the test.
     fn release(content: &[u8]) -> Release {
@@ -221,7 +222,7 @@ mod tests {
         let release = release(b"archive");
         fs::write(dir.path().join(&release.asset), b"archive").unwrap();
         assert_eq!(
-            fetch(&release, dir.path()).unwrap(),
+            fetch(release.download(), dir.path()).unwrap(),
             dir.path().join(&release.asset)
         );
     }
@@ -235,7 +236,7 @@ mod tests {
             b"archive",
         )
         .unwrap();
-        let archive = fetch(&release, dir.path()).unwrap();
+        let archive = fetch(release.download(), dir.path()).unwrap();
         assert_eq!(fs::read(archive).unwrap(), b"archive");
         assert!(!dir.path().join(format!("{}.part", release.asset)).exists());
     }
@@ -248,7 +249,9 @@ mod tests {
         let part = dir.path().join(format!("{}.part", release.asset));
         fs::write(&cached, b"tampered").unwrap();
         fs::write(&part, b"ARCHIVE").unwrap();
-        let err = fetch(&release, dir.path()).unwrap_err().to_string();
+        let err = fetch(release.download(), dir.path())
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("sha256 mismatch"), "{err}");
         assert!(!cached.exists() && !part.exists());
     }
@@ -256,7 +259,7 @@ mod tests {
     #[test]
     fn network_errors_say_the_download_resumes() {
         let dir = tempfile::tempdir().unwrap();
-        let err = fetch(&release(b"archive"), dir.path())
+        let err = fetch(release(b"archive").download(), dir.path())
             .unwrap_err()
             .to_string();
         assert!(err.contains("127.0.0.1:1"), "{err}");

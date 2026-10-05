@@ -1,8 +1,9 @@
-//! Unpacking `.tar.xz` and `.tar.gz` release archives into a staging directory.
+//! Unpacking `.tar.xz`, `.tar.gz` and `.tar.bz2` archives into a staging directory.
 //!
 //! Release archives hold one top-level directory (`LLVM-19.1.0-Linux-X64/`,
-//! `xpack-gcc-13.3.0-2/`), which is dropped so that its content becomes the install prefix. Nothing may land outside the destination:
-//! absolute paths, `..` components and symlinks pointing out of the tree are refused.
+//! `xpack-gcc-13.3.0-2/`, `gcc-10.5.0/`), which is dropped so that its content becomes the
+//! install prefix or the source tree. Nothing may land outside the destination: absolute paths,
+//! `..` components and symlinks pointing out of the tree are refused.
 
 use std::ffi::OsString;
 use std::fs;
@@ -12,29 +13,48 @@ use std::path::{Component, Path, PathBuf};
 use indicatif::{ProgressBar, ProgressStyle};
 use tar::EntryType;
 
-/// Unpacks the `.tar.xz` or `.tar.gz` at `archive`, told apart by name, into `dest`, without
-/// its top-level directory. The error is a reason for the user.
+/// How an archive is compressed, from its name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Compression {
+    Xz,
+    Gzip,
+    Bzip2,
+}
+
+impl Compression {
+    fn of(archive: &Path) -> Option<Self> {
+        let name = archive.to_string_lossy();
+        [
+            (".tar.xz", Self::Xz),
+            (".tar.gz", Self::Gzip),
+            (".tar.bz2", Self::Bzip2),
+        ]
+        .into_iter()
+        .find_map(|(ext, compression)| name.ends_with(ext).then_some(compression))
+    }
+}
+
+/// Unpacks the `.tar.xz`, `.tar.gz` or `.tar.bz2` at `archive`, told apart by name, into
+/// `dest`, without its top-level directory. The error is a reason for the user.
 pub fn unpack_archive(archive: &Path, dest: &Path) -> Result<(), String> {
-    let name = archive.to_string_lossy();
-    let gzip = name.ends_with(".tar.gz");
-    if !gzip && !name.ends_with(".tar.xz") {
+    let Some(compression) = Compression::of(archive) else {
         return Err(format!(
-            "{} is neither a .tar.xz nor a .tar.gz archive",
+            "{} is not a .tar.xz, .tar.gz or .tar.bz2 archive",
             archive.display()
         ));
-    }
+    };
     let file =
         fs::File::open(archive).map_err(|e| format!("cannot read {}: {e}", archive.display()))?;
     let size = file.metadata().map(|m| m.len()).unwrap_or(0);
-    let progress = progress_bar(size);
+    let progress = progress_bar(archive, size);
     let reader = Counting {
         inner: BufReader::with_capacity(1 << 20, file),
         progress: progress.clone(),
     };
-    let result = if gzip {
-        unpack(flate2::read::GzDecoder::new(reader), dest)
-    } else {
-        unpack(liblzma::read::XzDecoder::new(reader), dest)
+    let result = match compression {
+        Compression::Xz => unpack(liblzma::read::XzDecoder::new(reader), dest),
+        Compression::Gzip => unpack(flate2::read::GzDecoder::new(reader), dest),
+        Compression::Bzip2 => unpack(bzip2::read::BzDecoder::new(reader), dest),
     };
     match &result {
         Ok(()) => progress.finish_and_clear(),
@@ -188,8 +208,11 @@ impl<R: Read> Read for Counting<R> {
     }
 }
 
-fn progress_bar(size: u64) -> ProgressBar {
-    eprintln!("Extracting");
+fn progress_bar(archive: &Path, size: u64) -> ProgressBar {
+    eprintln!(
+        "Extracting {}",
+        archive.file_name().unwrap_or_default().to_string_lossy()
+    );
     if !io::stderr().is_terminal() {
         return ProgressBar::hidden();
     }
@@ -368,12 +391,34 @@ mod tests {
     }
 
     #[test]
+    fn unpacks_a_tar_bz2_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive = dir.path().join("gmp-6.1.0.tar.bz2");
+        let mut encoder = bzip2::write::BzEncoder::new(
+            fs::File::create(&archive).unwrap(),
+            bzip2::Compression::fast(),
+        );
+        io::Write::write_all(
+            &mut encoder,
+            &tar(&[Item::File("gmp-6.1.0/configure", "x", 0o755)]),
+        )
+        .unwrap();
+        encoder.finish().unwrap();
+        unpack_archive(&archive, &dir.path().join("out")).unwrap();
+        assert!(dir.path().join("out/configure").is_file());
+
+        fs::write(&archive, "not bzip2").unwrap();
+        let err = unpack_archive(&archive, &dir.path().join("bad")).unwrap_err();
+        assert!(err.contains("cannot read the archive"), "{err}");
+    }
+
+    #[test]
     fn refuses_other_archive_formats() {
         let dir = tempfile::tempdir().unwrap();
         let archive = dir.path().join("a.zip");
         fs::write(&archive, "PK").unwrap();
         let err = unpack_archive(&archive, &dir.path().join("out")).unwrap_err();
-        assert!(err.contains("neither a .tar.xz nor a .tar.gz"), "{err}");
+        assert!(err.contains("not a .tar.xz, .tar.gz or .tar.bz2"), "{err}");
         assert!(!dir.path().join("out").exists());
     }
 }

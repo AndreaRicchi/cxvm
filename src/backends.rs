@@ -110,7 +110,7 @@ pub fn install(store: &Store, lock: &StoreLock, release: &Release) -> Result<Rep
     let id = &release.id;
     let backend = backend_for(id.kind());
     let paths = store.paths();
-    let archive = download::fetch(release, &paths.downloads_dir())?;
+    let archive = download::fetch(release.download(), &paths.downloads_dir())?;
     let staged = store.staging_path(&format!("{}-{}", id.kind(), id.version()));
     let fail = |reason: String, hint: String| Error::Install {
         id: id.to_string(),
