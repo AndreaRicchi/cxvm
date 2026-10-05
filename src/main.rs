@@ -8,7 +8,7 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("error: {err}");
-            ExitCode::FAILURE
+            ExitCode::from(err.exit_code())
         }
     }
 }

@@ -92,6 +92,11 @@ impl Paths {
     pub fn downloads_dir(&self) -> PathBuf {
         self.cache.join("downloads")
     }
+
+    /// Logs of builds from source.
+    pub fn logs_dir(&self) -> PathBuf {
+        self.cache.join("logs")
+    }
 }
 
 #[cfg(test)]

@@ -279,13 +279,24 @@ impl FromStr for Spec {
     }
 }
 
-/// The `system` compiler: the first executable `name` (`cc`, `c++`) on `path_var`, skipping
-/// entries that cxvm manages (inside `store`, or inside a `.cxvm` directory) and relative ones.
-pub fn find_system(name: &str, path_var: Option<&OsStr>, store: &Path) -> Option<PathBuf> {
+/// The directories of `path_var` that belong to the system: without the entries cxvm manages
+/// (inside `store`, or inside a `.cxvm` directory) and the relative ones.
+pub fn unmanaged_path(path_var: Option<&OsStr>, store: &Path) -> Vec<PathBuf> {
     let managed =
         |dir: &Path| dir.starts_with(store) || dir.components().any(|c| c.as_os_str() == ".cxvm");
-    std::env::split_paths(path_var?)
+    path_var
+        .map(std::env::split_paths)
+        .into_iter()
+        .flatten()
         .filter(|dir| dir.is_absolute() && !managed(dir))
+        .collect()
+}
+
+/// The `system` compiler: the first executable `name` (`cc`, `c++`) on `path_var`, skipping
+/// entries that cxvm manages (see [`unmanaged_path`]).
+pub fn find_system(name: &str, path_var: Option<&OsStr>, store: &Path) -> Option<PathBuf> {
+    unmanaged_path(path_var, store)
+        .into_iter()
         .map(|dir| dir.join(name))
         .find(|candidate| files::is_executable(candidate))
 }

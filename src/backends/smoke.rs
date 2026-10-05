@@ -118,7 +118,7 @@ fn run(command: &mut Command) -> std::io::Result<Output> {
 }
 
 /// The last lines of `stderr`, indented.
-fn tail(stderr: &[u8]) -> String {
+pub(crate) fn tail(stderr: &[u8]) -> String {
     let text = String::from_utf8_lossy(stderr);
     let lines: Vec<&str> = text.lines().collect();
     let start = lines.len().saturating_sub(5);

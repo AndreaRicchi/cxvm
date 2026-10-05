@@ -100,6 +100,31 @@ pub enum Error {
         hint: String,
     },
 
+    /// A build from source whose `configure` or `make` failed.
+    #[error(
+        "cannot build {id}: {failure}\n{detail}  the full log is {}\n  hint: {hint}",
+        log.display()
+    )]
+    Build {
+        id: String,
+        /// The step that failed and how, e.g. `` `make` exited with status 2 ``.
+        failure: String,
+        log: PathBuf,
+        /// Indented lines quoted from the log, or empty.
+        detail: String,
+        hint: String,
+    },
+
+    /// The user interrupted a long operation, which cleaned up after itself.
+    #[error(
+        "{what} was interrupted; nothing was installed\n  \
+         hint: run the same command again to start over; what was downloaded stays in the cache"
+    )]
+    Cancelled {
+        /// What was running, e.g. `the build of gcc@10.5.0`.
+        what: String,
+    },
+
     /// A cxvm file (`config.toml`, `.cxvmrc`) has invalid content.
     #[error("{} is invalid: {message}\n  hint: {hint}", path.display())]
     InvalidFile {
@@ -107,6 +132,17 @@ pub enum Error {
         message: String,
         hint: String,
     },
+}
+
+impl Error {
+    /// The exit status `cxvm` ends with for this error: 130 after an interrupt, as a shell
+    /// reports a command stopped by Ctrl-C, else 1.
+    pub fn exit_code(&self) -> u8 {
+        match self {
+            Error::Cancelled { .. } => 130,
+            _ => 1,
+        }
+    }
 }
 
 /// Shorthand for results carrying [`Error`].

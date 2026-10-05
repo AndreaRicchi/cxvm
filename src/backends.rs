@@ -1,4 +1,5 @@
-//! Toolchain installers: prebuilt Clang (M3), prebuilt GCC (M4), GCC from source (M5).
+//! Toolchain installers: prebuilt Clang (M3), prebuilt GCC (M4), GCC from source (M5, in
+//! [`source`]).
 //!
 //! Releases come from the embedded [`catalog`](crate::catalog). [`install`] runs the steps every
 //! backend shares: download and verify the archive, let the [`Backend`] turn it into a prefix
@@ -8,6 +9,7 @@
 pub mod download;
 pub mod extract;
 pub mod smoke;
+pub mod source;
 
 use std::path::{Path, PathBuf};
 

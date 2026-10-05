@@ -85,9 +85,7 @@ pub fn probe(prefix: &Path, kind: Kind) -> Result<Detected> {
             "link a prefix whose C and C++ drivers come from the same release".into(),
         ));
     }
-    let version_line = capture(&cc, "--version")
-        .and_then(|out| out.lines().next().map(str::to_owned))
-        .unwrap_or_default();
+    let version_line = version_line(&cc).unwrap_or_default();
     Ok(Detected {
         kind,
         version,
@@ -95,6 +93,11 @@ pub fn probe(prefix: &Path, kind: Kind) -> Result<Detected> {
         cxx,
         version_line,
     })
+}
+
+/// First line of `driver --version`, if it ran and succeeded.
+pub fn version_line(driver: &Path) -> Option<String> {
+    capture(driver, "--version").and_then(|out| out.lines().next().map(str::to_owned))
 }
 
 /// Stdout of `program arg`, if it ran and succeeded.
