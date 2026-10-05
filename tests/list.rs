@@ -225,6 +225,7 @@ fn available_json_has_ids_sizes_and_urls() {
             "size": 1610612736u64,
             "installed": false,
             "url": "http://127.0.0.1:1/LLVM-19.1.0-Linux-X64.tar.xz",
+            "from_source": false,
         }])
     );
 }

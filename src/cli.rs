@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::Shell;
 
+use crate::backends::source;
 use crate::commands::{self, Context};
 use crate::error::{Error, Result};
 use crate::integrations;
@@ -35,6 +36,32 @@ pub enum Command {
         /// Build GCC from source instead of using a prebuilt archive
         #[arg(long)]
         from_source: bool,
+        /// With --from-source: full three-stage bootstrap instead of one build with the host
+        /// compiler (about three times as long)
+        #[arg(long, requires = "from_source")]
+        bootstrap: bool,
+        /// With --from-source: build with this GCC from `cxvm list` instead of the system
+        /// compiler; old releases often need an older compiler
+        #[arg(long, value_name = "ID", requires = "from_source")]
+        host_compiler: Option<String>,
+        /// With --from-source: parallel `make` jobs; default: one per CPU
+        #[arg(
+            short,
+            long,
+            value_name = "N",
+            requires = "from_source",
+            value_parser = clap::value_parser!(u32).range(1..)
+        )]
+        jobs: Option<u32>,
+        /// With --from-source: one more argument for GCC's `configure`, e.g.
+        /// `--configure-arg=--disable-libsanitizer`; may be repeated
+        #[arg(
+            long = "configure-arg",
+            value_name = "ARG",
+            requires = "from_source",
+            allow_hyphen_values = true
+        )]
+        configure_args: Vec<String>,
     },
     /// Remove a toolchain from the store
     Remove {
@@ -130,17 +157,25 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::List { json, .. } => return commands::list(&Context::from_process_env()?, json),
         Command::Current { json } => return commands::current(&Context::from_process_env()?, json),
         Command::Install {
-            id: None,
-            from_source: false,
-        } => return commands::install_pinned(&Context::from_process_env()?),
-        Command::Install {
-            id: None,
-            from_source: true,
-        } => ("install --from-source", "M5"),
-        Command::Install {
-            id: Some(id),
+            id,
             from_source,
-        } => return commands::install(&Context::from_process_env()?, &id, from_source),
+            bootstrap,
+            host_compiler,
+            jobs,
+            configure_args,
+        } => {
+            let build = from_source.then(|| source::Options {
+                bootstrap,
+                jobs: jobs.map(|jobs| jobs as usize),
+                host_compiler,
+                configure_args,
+            });
+            let ctx = Context::from_process_env()?;
+            return match id {
+                Some(id) => commands::install(&ctx, &id, build.as_ref()),
+                None => commands::install_pinned(&ctx, build.as_ref()),
+            };
+        }
         Command::Remove { id, force } => {
             return commands::remove(&Context::from_process_env()?, &id, force);
         }
@@ -178,6 +213,53 @@ mod tests {
         match cli.command {
             Command::Exec { cmd } => assert_eq!(cmd, ["make", "-j4", "--dry-run"]),
             other => panic!("unexpected command {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_options_need_from_source() {
+        let cli = Cli::parse_from([
+            "cxvm",
+            "install",
+            "gcc@10",
+            "--from-source",
+            "--bootstrap",
+            "--host-compiler",
+            "gcc@13",
+            "-j",
+            "4",
+            "--configure-arg=--disable-libsanitizer",
+            "--configure-arg",
+            "--with-system-zlib",
+        ]);
+        match cli.command {
+            Command::Install {
+                id,
+                from_source,
+                bootstrap,
+                host_compiler,
+                jobs,
+                configure_args,
+            } => {
+                assert_eq!(id.as_deref(), Some("gcc@10"));
+                assert!(from_source && bootstrap);
+                assert_eq!(host_compiler.as_deref(), Some("gcc@13"));
+                assert_eq!(jobs, Some(4));
+                assert_eq!(
+                    configure_args,
+                    ["--disable-libsanitizer", "--with-system-zlib"]
+                );
+            }
+            other => panic!("unexpected command {other:?}"),
+        }
+        for args in [
+            &["cxvm", "install", "gcc@10", "--bootstrap"][..],
+            &["cxvm", "install", "gcc@10", "-j", "4"],
+            &["cxvm", "install", "gcc@10", "--host-compiler", "gcc@13"],
+            &["cxvm", "install", "gcc@10", "--configure-arg=--x"],
+            &["cxvm", "install", "gcc@10", "--from-source", "-j", "0"],
+        ] {
+            assert!(Cli::try_parse_from(args).is_err(), "{args:?}");
         }
     }
 

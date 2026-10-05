@@ -312,9 +312,8 @@ fn refuses_what_it_cannot_install() {
     for (args, expected) in [
         (
             &["install", "clang@19.1.0", "--from-source"][..],
-            "planned for milestone M5",
+            "cxvm builds only GCC from source",
         ),
-        (&["install", "--from-source"], "planned for milestone M5"),
         (
             &["install", "clang@19.1.0-local"],
             "cxvm link <prefix> --as clang@19.1.0-local",

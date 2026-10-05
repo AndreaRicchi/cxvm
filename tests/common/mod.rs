@@ -89,14 +89,50 @@ impl Sandbox {
     /// nothing to install unless the test sets `CXVM_CATALOG` or removes it.
     pub fn cxvm(&self, rel: &str) -> Command {
         let mut cmd = Command::cargo_bin("cxvm").expect("cxvm binary built by cargo");
-        cmd.current_dir(self.project().join(rel))
-            .env_clear()
-            .env("HOME", self.path("home"))
-            .env("CXVM_HOME", self.store())
-            .env("XDG_CACHE_HOME", self.path("cache"))
-            .env("CXVM_CATALOG", self.empty_catalog())
-            .env("PATH", self.bin());
+        cmd.current_dir(self.project().join(rel)).env_clear();
+        for (name, value) in self.env() {
+            cmd.env(name, value);
+        }
         cmd
+    }
+
+    /// Like [`Sandbox::cxvm`], as a `std` command: for tests that need the running process,
+    /// e.g. to send it a signal.
+    pub fn std_cxvm(&self, rel: &str) -> std::process::Command {
+        let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin("cxvm"));
+        cmd.current_dir(self.project().join(rel)).env_clear();
+        for (name, value) in self.env() {
+            cmd.env(name, value);
+        }
+        cmd
+    }
+
+    fn env(&self) -> [(&'static str, PathBuf); 5] {
+        [
+            ("HOME", self.path("home")),
+            ("CXVM_HOME", self.store()),
+            ("XDG_CACHE_HOME", self.path("cache")),
+            ("CXVM_CATALOG", self.empty_catalog()),
+            ("PATH", self.bin()),
+        ]
+    }
+
+    /// The sandbox's `bin/` followed by the host's `PATH`: for tests that run real programs
+    /// such as `make`.
+    pub fn path_with_host(&self) -> std::ffi::OsString {
+        let host = std::env::var_os("PATH").unwrap_or_default();
+        std::env::join_paths(std::iter::once(self.bin()).chain(std::env::split_paths(&host)))
+            .unwrap()
+    }
+
+    /// Writes an executable script `dir/name` that "compiles": with `-o <out>` it writes an
+    /// executable `out` printing what cxvm's checks expect.
+    pub fn compiling_compiler(&self, dir: &Path, name: &str) -> PathBuf {
+        fs::create_dir_all(dir).unwrap();
+        let path = dir.join(name);
+        fs::write(&path, clang_script("1.0.0", true)).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        path
     }
 }
 
@@ -241,6 +277,22 @@ impl<'a> FakeGcc<'a> {
         )
     }
 
+    /// Writes the toolchain into `prefix`, like an unpacked [`FakeGcc::archive`].
+    pub fn install_into(&self, prefix: &Path) {
+        let version = self.version;
+        for driver in ["gcc", "g++"] {
+            let path = prefix.join("bin").join(driver);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, self.script()).unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let install_dir = prefix.join(format!("lib/gcc/x86_64-pc-linux-gnu/{version}"));
+        fs::create_dir_all(&install_dir).unwrap();
+        fs::write(install_dir.join("libgcc.a"), "").unwrap();
+        fs::create_dir_all(prefix.join("lib64")).unwrap();
+        fs::write(prefix.join("lib64/libstdc++.so.6"), "").unwrap();
+    }
+
     /// A `.tar.gz` laid out like an xPack GCC release: one top-level directory holding
     /// `bin/gcc`, `bin/g++`, `lib64/libstdc++.so.6` and `lib/gcc/<triple>/<version>/libgcc.a`.
     pub fn archive(&self) -> Vec<u8> {
@@ -277,11 +329,123 @@ impl<'a> FakeGcc<'a> {
     }
 }
 
+/// A fake GCC source release, see [`FakeSource::archive`].
+pub struct FakeSource<'a> {
+    pub version: &'a str,
+    /// The content of `contrib/download_prerequisites`.
+    pub prerequisites: &'a str,
+    /// Shell commands `make` runs to "build", e.g. `exit 1`.
+    pub build: &'a str,
+}
+
+/// What GCC 10's `contrib/download_prerequisites` names.
+pub const PREREQUISITES: &str = "gmp='gmp-6.1.0.tar.bz2'\nmpfr='mpfr-3.1.6.tar.bz2'\n\
+                                 mpc='mpc-1.0.3.tar.gz'\nisl='isl-0.18.tar.bz2'\n";
+
+impl<'a> FakeSource<'a> {
+    pub fn new(version: &'a str) -> Self {
+        Self {
+            version,
+            prerequisites: PREREQUISITES,
+            build: "@echo building fake gcc",
+        }
+    }
+
+    /// A `.tar.xz` laid out like a GCC source release: `gcc-<version>/configure`, which
+    /// writes a `Makefile` and `configure.record` (its arguments, `CC`, `CXX`, `PATH` and the
+    /// libraries found in the tree), and `contrib/download_prerequisites`. `make` runs
+    /// [`FakeSource::build`]; `make install-strip` installs a [`FakeGcc`] and the record, as
+    /// `share/configure.record`, below `$(DESTDIR)$(prefix)`.
+    pub fn archive(&self) -> Vec<u8> {
+        let version = self.version;
+        let top = format!("gcc-{version}");
+        let configure = format!(
+            "#!/bin/sh\nsrc=\"${{0%/*}}\"\nprefix=\n\
+             for a in \"$@\"; do case \"$a\" in --prefix=*) prefix=\"${{a#--prefix=}}\" ;; esac; done\n\
+             {{ echo \"args: $*\"; echo \"CC=$CC\"; echo \"CXX=$CXX\"; echo \"PATH=$PATH\"\n\
+             echo \"CFLAGS=${{CFLAGS-unset}}\"\n\
+             for d in gmp mpfr mpc isl; do\n\
+             [ -f \"$src/$d/VERSION\" ] && echo \"with $d: $(cat \"$src/$d/VERSION\")\"\n\
+             done; }} > configure.record\n\
+             echo 'checking for a fake compiler... yes'\n\
+             cat > Makefile <<EOF\n\
+             prefix = $prefix\nsrc = $src\n\
+             gccdir = \\$(DESTDIR)\\$(prefix)/lib/gcc/x86_64-pc-linux-gnu/{version}\n\
+             all:\n\t{build}\n\
+             install-strip:\n\
+             \tmkdir -p \\$(DESTDIR)\\$(prefix)/bin \\$(DESTDIR)\\$(prefix)/lib64\n\
+             \tmkdir -p \\$(DESTDIR)\\$(prefix)/share \\$(gccdir)\n\
+             \tcp \\$(src)/fake-driver \\$(DESTDIR)\\$(prefix)/bin/gcc\n\
+             \tcp \\$(src)/fake-driver \\$(DESTDIR)\\$(prefix)/bin/g++\n\
+             \ttouch \\$(DESTDIR)\\$(prefix)/lib64/libstdc++.so.6 \\$(gccdir)/libgcc.a\n\
+             \tcp configure.record \\$(DESTDIR)\\$(prefix)/share/configure.record\n\
+             EOF\n",
+            build = self.build
+        );
+        let mut builder = tar::Builder::new(Vec::new());
+        tar_dir(&mut builder, &format!("{top}/contrib/"));
+        tar_file(&mut builder, &format!("{top}/configure"), 0o755, &configure);
+        tar_file(
+            &mut builder,
+            &format!("{top}/fake-driver"),
+            0o755,
+            &FakeGcc::new(version).script(),
+        );
+        tar_file(
+            &mut builder,
+            &format!("{top}/contrib/download_prerequisites"),
+            0o755,
+            self.prerequisites,
+        );
+        let tar = builder.into_inner().unwrap();
+        let mut xz = liblzma::write::XzEncoder::new(Vec::new(), 1);
+        std::io::Write::write_all(&mut xz, &tar).unwrap();
+        xz.finish().unwrap()
+    }
+}
+
+/// A fake library tarball named `asset` (`gmp-6.1.0.tar.bz2`, `mpc-1.0.3.tar.gz`): one
+/// top-level directory holding a `VERSION` file with the directory's name.
+pub fn fake_prerequisite(asset: &str) -> Vec<u8> {
+    let (top, ext) = asset.split_once(".tar.").expect("a tarball name");
+    let mut builder = tar::Builder::new(Vec::new());
+    tar_file(&mut builder, &format!("{top}/VERSION"), 0o644, top);
+    let tar = builder.into_inner().unwrap();
+    match ext {
+        "bz2" => {
+            let mut bz = bzip2::write::BzEncoder::new(Vec::new(), bzip2::Compression::fast());
+            bz.write_all(&tar).unwrap();
+            bz.finish().unwrap()
+        }
+        "gz" => {
+            let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+            gz.write_all(&tar).unwrap();
+            gz.finish().unwrap()
+        }
+        other => panic!("unknown compression {other}"),
+    }
+}
+
+/// Appends one `[[prerequisite]]` entry per `(asset, url, archive)` to the catalog at `path`.
+pub fn append_prerequisites(path: &Path, entries: &[(&str, &str, &[u8])]) {
+    let mut text = fs::read_to_string(path).unwrap_or_default();
+    for (asset, url, archive) in entries {
+        text.push_str(&format!(
+            "\n[[prerequisite]]\nasset = \"{asset}\"\nurl = \"{url}\"\nsize = {}\n\
+             sha256 = \"{}\"\nsource = \"test\"\n",
+            archive.len(),
+            sha256_hex(archive)
+        ));
+    }
+    fs::write(path, text).unwrap();
+}
+
 /// The archive name a release of `kind` has upstream.
 pub fn asset_name(kind: &str, version: &str) -> String {
     match kind {
         "clang" => format!("LLVM-{version}-Linux-X64.tar.xz"),
         "gcc" => format!("xpack-gcc-{version}-1-linux-x64.tar.gz"),
+        "gcc-source" => format!("gcc-{version}.tar.xz"),
         other => panic!("unknown kind {other}"),
     }
 }

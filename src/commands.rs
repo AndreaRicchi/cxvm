@@ -2,11 +2,13 @@
 //! calls into here with a [`Context`] built from the process environment.
 
 use std::ffi::OsString;
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
 use crate::backends;
+use crate::backends::source::{self, GnuSource, HostCompiler};
 use crate::catalog::{self, Catalog, Release};
 use crate::config::Config;
 use crate::detect;
@@ -31,6 +33,8 @@ pub struct Context {
     pub shell: Option<OsString>,
     /// Value of `CXVM_CATALOG`: a catalog file to use instead of the embedded one.
     pub catalog: Option<PathBuf>,
+    /// Whether a person can be asked a question: stdin and stderr are terminals.
+    pub interactive: bool,
 }
 
 impl Context {
@@ -62,6 +66,7 @@ impl Context {
             path_var: std::env::var_os("PATH"),
             shell: std::env::var_os("SHELL"),
             catalog,
+            interactive: std::io::stdin().is_terminal() && std::io::stderr().is_terminal(),
         })
     }
 
@@ -176,25 +181,37 @@ struct AvailableEntry {
     size: u64,
     installed: bool,
     url: String,
+    /// No prebuilt archive: `cxvm install <id> --from-source` builds it.
+    from_source: bool,
 }
 
 /// `cxvm list --available`: the releases cxvm can install, as a table with one row per major
-/// (see [`render_available`]), or with `json` every release, newest first per kind.
+/// (see [`render_available`]), or with `json` every release, newest first per kind. Source
+/// releases are listed where there is no prebuilt archive.
 pub fn list_available(ctx: &Context, json: bool) -> Result<()> {
     let catalog = ctx.catalog()?;
     let installed = ctx.store().installed()?;
     let is_installed = |id: &ToolchainId| installed.iter().any(|t| &t.id == id);
+    let source_only: Vec<&Release> = catalog
+        .source_releases()
+        .iter()
+        .filter(|source| !catalog.releases().iter().any(|r| r.id == source.id))
+        .collect();
 
     if json {
-        let mut releases: Vec<_> = catalog.releases().iter().collect();
-        releases.sort_by(|a, b| a.id.kind().cmp(&b.id.kind()).then(b.id.cmp(&a.id)));
+        let mut releases: Vec<(&Release, bool)> = (catalog.releases().iter())
+            .map(|release| (release, false))
+            .chain(source_only.iter().map(|release| (*release, true)))
+            .collect();
+        releases.sort_by(|(a, _), (b, _)| a.id.kind().cmp(&b.id.kind()).then(b.id.cmp(&a.id)));
         let entries: Vec<AvailableEntry> = releases
             .into_iter()
-            .map(|release| AvailableEntry {
+            .map(|(release, from_source)| AvailableEntry {
                 id: release.id.to_string(),
                 size: release.size,
                 installed: is_installed(&release.id),
                 url: release.url.clone(),
+                from_source,
             })
             .collect();
         let text = serde_json::to_string_pretty(&entries).expect("entries serialize");
@@ -203,7 +220,12 @@ pub fn list_available(ctx: &Context, json: bool) -> Result<()> {
     }
     print!(
         "{}",
-        render_available(catalog.releases(), is_installed, &catalog.origin())
+        render_available(
+            catalog.releases(),
+            &source_only,
+            is_installed,
+            &catalog.origin()
+        )
     );
     Ok(())
 }
@@ -215,36 +237,60 @@ const AVAILABLE_WIDTH: usize = 80;
 /// A major and its releases, newest first: one row of the `list --available` table.
 type MajorRow<'a> = (u32, Vec<&'a Release>);
 
-/// The table of `cxvm list --available`: per kind, one row per major holding its versions,
+/// A table of the `list --available` output: the releases of one kind, by major.
+struct AvailableTable<'a> {
+    /// A line printed above the table, when it starts a new section.
+    title: Option<&'static str>,
+    kind: Kind,
+    rows: Vec<MajorRow<'a>>,
+}
+
+const SOURCE_TITLE: &str = "No prebuilt archive, built with `cxvm install <id> --from-source`:";
+
+/// The tables of `cxvm list --available`: per kind, one row per major holding its versions,
 /// newest first, wrapped at [`AVAILABLE_WIDTH`]. `*` marks the installed ones; `download` is
-/// the archive size of the row's newest version.
+/// the archive size of the row's newest version. `source_only`, the releases that can only be
+/// built, follow under a title of their own.
 fn render_available(
     releases: &[Release],
+    source_only: &[&Release],
     is_installed: impl Fn(&ToolchainId) -> bool,
     origin: &str,
 ) -> String {
     let mut out = format!("Installable toolchains (* = installed), from {origin}:\n");
-    let mut tables: Vec<(Kind, Vec<MajorRow>)> = Vec::new();
-    for kind in Kind::ALL {
-        let mut of_kind: Vec<&Release> = releases.iter().filter(|r| r.id.kind() == kind).collect();
-        of_kind.sort_by(|a, b| b.id.cmp(&a.id));
-        let mut rows: Vec<MajorRow> = Vec::new();
-        for release in of_kind {
-            let major = release.id.version().major();
-            match rows.last_mut() {
-                Some((last, versions)) if *last == major => versions.push(release),
-                _ => rows.push((major, vec![release])),
+    let mut tables: Vec<AvailableTable> = Vec::new();
+    let sections: [(Option<&'static str>, Vec<&Release>); 2] = [
+        (None, releases.iter().collect()),
+        (Some(SOURCE_TITLE), source_only.to_vec()),
+    ];
+    for (mut title, section) in sections {
+        for kind in Kind::ALL {
+            let mut of_kind: Vec<&Release> = (section.iter().copied())
+                .filter(|r| r.id.kind() == kind)
+                .collect();
+            of_kind.sort_by(|a, b| b.id.cmp(&a.id));
+            let mut rows: Vec<MajorRow> = Vec::new();
+            for release in of_kind {
+                let major = release.id.version().major();
+                match rows.last_mut() {
+                    Some((last, versions)) if *last == major => versions.push(release),
+                    _ => rows.push((major, vec![release])),
+                }
             }
-        }
-        if !rows.is_empty() {
-            tables.push((kind, rows));
+            if !rows.is_empty() {
+                tables.push(AvailableTable {
+                    title: title.take(),
+                    kind,
+                    rows,
+                });
+            }
         }
     }
     if tables.is_empty() {
         return out;
     }
 
-    let rows = || tables.iter().flat_map(|(_, rows)| rows);
+    let rows = || tables.iter().flat_map(|table| &table.rows);
     let first = Kind::ALL
         .map(|kind| kind.as_str().len())
         .into_iter()
@@ -264,13 +310,16 @@ fn render_available(
     let indent = 2 + first + 2 + size + 2;
     let per_line = (AVAILABLE_WIDTH.saturating_sub(indent) + 1) / (cell + 1);
 
-    for (kind, rows) in &tables {
+    for table in &tables {
+        if let Some(title) = table.title {
+            out.push_str(&format!("\n{title}\n"));
+        }
         out.push_str(&format!(
             "\n  {:<first$}  {:>size$}  versions\n",
-            kind.as_str(),
+            table.kind.as_str(),
             "download"
         ));
-        for (major, versions) in rows {
+        for (major, versions) in &table.rows {
             let cells: Vec<String> = versions
                 .iter()
                 .map(|release| {
@@ -521,9 +570,84 @@ pub fn use_(ctx: &Context, id: &str) -> Result<()> {
     Ok(())
 }
 
+/// How a release gets into the store.
+#[derive(Debug, Clone, Copy)]
+enum How<'a> {
+    /// Unpack the prebuilt archive.
+    Prebuilt,
+    /// Build the source tarball.
+    Source(&'a source::Options),
+}
+
+/// The build options when the user agreed to a build without passing any.
+static DEFAULT_BUILD: source::Options = source::Options {
+    bootstrap: false,
+    jobs: None,
+    host_compiler: None,
+    configure_args: Vec::new(),
+};
+
+/// The release to install for `spec` and how: the highest source release when the user asked
+/// for a build with `build`; else the highest prebuilt one; else, if there is a source release
+/// and the user agrees to wait, that one. `None` when the catalog has nothing for `spec`.
+/// `command` is what builds it from source, for the hint when nobody can be asked.
+fn pick_release<'a>(
+    ctx: &Context,
+    catalog: &'a Catalog,
+    spec: &Spec,
+    build: Option<&'a source::Options>,
+    command: &str,
+) -> Result<Option<(&'a Release, How<'a>)>> {
+    if let Some(options) = build {
+        if let Spec::Toolchain {
+            kind: Kind::Clang, ..
+        } = spec
+        {
+            return Err(Error::Usage {
+                message: format!("cxvm builds only GCC from source, not {spec}"),
+                hint: "install a prebuilt Clang: leave `--from-source` out".into(),
+            });
+        }
+        let release = catalog.resolve_source(spec);
+        return Ok(release.map(|release| (release, How::Source(options))));
+    }
+    if let Some(release) = catalog.resolve(spec) {
+        return Ok(Some((release, How::Prebuilt)));
+    }
+    let Some(release) = catalog.resolve_source(spec) else {
+        return Ok(None);
+    };
+    let id = &release.id;
+    let jobs = std::thread::available_parallelism().map_or(1, usize::from);
+    let minutes = source::estimate_minutes(jobs, false);
+    if ctx.interactive {
+        eprint!(
+            "{id} has no prebuilt archive. Build it from source (about {minutes} min here)? [y/N] "
+        );
+        let mut answer = String::new();
+        let _ = std::io::stdin().read_line(&mut answer);
+        if is_yes(&answer) {
+            return Ok(Some((release, How::Source(&DEFAULT_BUILD))));
+        }
+    }
+    Err(Error::Usage {
+        message: format!("{id} has no prebuilt archive; cxvm can build it from source"),
+        hint: format!(
+            "run `{command}` (about {minutes} min here); `cxvm install --help` lists the \
+             build options"
+        ),
+    })
+}
+
+/// Whether `answer`, a line typed at a `[y/N]` prompt, means yes.
+fn is_yes(answer: &str) -> bool {
+    matches!(answer.trim().to_lowercase().as_str(), "y" | "yes")
+}
+
 /// `cxvm install` without an id: install the project's pinned toolchain if it is missing and
-/// the catalog has it, then regenerate `.cxvm/`.
-pub fn install_pinned(ctx: &Context) -> Result<()> {
+/// the catalog has it, then regenerate `.cxvm/`. With `build`, a missing toolchain is built
+/// from source.
+pub fn install_pinned(ctx: &Context, build: Option<&source::Options>) -> Result<()> {
     let Some(rc) = project::find_rc(&ctx.cwd) else {
         return Err(Error::Usage {
             message: format!(
@@ -544,13 +668,19 @@ pub fn install_pinned(ctx: &Context) -> Result<()> {
             target
         }
         Err(err @ Error::NotInstalled { .. }) => {
-            let catalog = ctx.catalog()?;
             let installable = match &spec {
                 Spec::Toolchain { version, .. } => version.suffix().is_none(),
                 Spec::System => false,
             };
-            match catalog.resolve(&spec).filter(|_| installable) {
-                Some(release) => Target::Toolchain(install_release(ctx, release)?),
+            if !installable {
+                return Err(err);
+            }
+            let catalog = ctx.catalog()?;
+            let command = "cxvm install --from-source";
+            match pick_release(ctx, &catalog, &spec, build, command)? {
+                Some((release, how)) => {
+                    Target::Toolchain(install_release(ctx, &catalog, release, how)?)
+                }
                 None => return Err(err),
             }
         }
@@ -560,8 +690,9 @@ pub fn install_pinned(ctx: &Context) -> Result<()> {
     generate_project(ctx, &root, &target)
 }
 
-/// `cxvm install <id>`: download a release from the catalog and install it in the store.
-pub fn install(ctx: &Context, id: &str, from_source: bool) -> Result<()> {
+/// `cxvm install <id>`: download a release from the catalog and install it in the store, or
+/// with `build`, build it from source.
+pub fn install(ctx: &Context, id: &str, build: Option<&source::Options>) -> Result<()> {
     let spec: Spec = id.parse()?;
     let Spec::Toolchain { kind, version } = &spec else {
         return Err(Error::Usage {
@@ -582,42 +713,94 @@ pub fn install(ctx: &Context, id: &str, from_source: bool) -> Result<()> {
             ),
         });
     }
-    if from_source {
-        return Err(Error::NotImplemented {
-            command: "install --from-source",
-            milestone: "M5",
-        });
-    }
     let catalog = ctx.catalog()?;
-    let Some(release) = catalog.resolve(&spec) else {
-        let same_major: Vec<String> = catalog
-            .releases()
-            .iter()
-            .filter(|r| r.id.kind() == *kind && r.id.version().major() == version.major())
-            .map(|r| r.id.to_string())
+    let command = format!("cxvm install {spec} --from-source");
+    let Some((release, how)) = pick_release(ctx, &catalog, &spec, build, &command)? else {
+        let same_major = |releases: &[Release]| -> Vec<String> {
+            releases
+                .iter()
+                .filter(|r| r.id.kind() == *kind && r.id.version().major() == version.major())
+                .map(|r| r.id.to_string())
+                .collect()
+        };
+        let prebuilt = match build {
+            Some(_) => Vec::new(),
+            None => same_major(catalog.releases()),
+        };
+        let from_source: Vec<String> = same_major(catalog.source_releases())
+            .into_iter()
+            .filter(|id| !prebuilt.contains(id))
             .collect();
-        let hint = if same_major.is_empty() {
+        let mut offers = Vec::new();
+        if !prebuilt.is_empty() {
+            offers.push(format!("available: {}", prebuilt.join(", ")));
+        }
+        if !from_source.is_empty() {
+            offers.push(format!("with `--from-source`: {}", from_source.join(", ")));
+        }
+        let hint = if offers.is_empty() {
             "`cxvm list --available` shows what can be installed; register other builds with \
              `cxvm link <prefix>`"
                 .to_owned()
         } else {
-            format!("available: {}", same_major.join(", "))
+            offers.join("; ")
         };
         return Err(Error::Usage {
-            message: format!("{spec} is not in {}", catalog.origin()),
+            message: match build {
+                Some(_) => format!("{spec} is not a source release in {}", catalog.origin()),
+                None => format!("{spec} is not in {}", catalog.origin()),
+            },
             hint,
         });
     };
     if !spec.is_exact() {
         println!("Resolved {spec} to {}", release.id);
     }
-    let toolchain = install_release(ctx, release)?;
+    let toolchain = install_release(ctx, &catalog, release, how)?;
     println!("  pin it with `cxvm use {}`", toolchain.id);
     Ok(())
 }
 
+/// The compiler to build GCC with: the GCC `options` names, else the system's (`None` if
+/// there is none).
+fn host_compiler(
+    ctx: &Context,
+    store: &Store,
+    options: &source::Options,
+) -> Result<Option<HostCompiler>> {
+    let system = || HostCompiler::system(ctx.path_var.as_deref(), ctx.paths.data_dir());
+    let Some(input) = &options.host_compiler else {
+        return Ok(system());
+    };
+    let spec: Spec = input.parse()?;
+    if let Spec::Toolchain {
+        kind: Kind::Clang, ..
+    } = spec
+    {
+        return Err(Error::Usage {
+            message: format!("`--host-compiler {spec}`: cxvm builds GCC with GCC, not with Clang"),
+            hint: "pass a GCC that `cxvm list` shows, or leave the option out to build with \
+                   the system compiler"
+                .into(),
+        });
+    }
+    match Target::find(store, &spec, " (--host-compiler)".into())? {
+        Target::System => Ok(system()),
+        Target::Toolchain(toolchain) => Ok(Some(HostCompiler {
+            label: toolchain.id.to_string(),
+            cc: toolchain.cc,
+            cxx: toolchain.cxx,
+        })),
+    }
+}
+
 /// Installs `release` unless the store has it already, and returns it.
-fn install_release(ctx: &Context, release: &Release) -> Result<Installed> {
+fn install_release(
+    ctx: &Context,
+    catalog: &Catalog,
+    release: &Release,
+    how: How<'_>,
+) -> Result<Installed> {
     let store = ctx.store();
     let present = |store: &Store| -> Result<Option<Installed>> {
         Ok(store.installed()?.into_iter().find(|t| t.id == release.id))
@@ -628,6 +811,12 @@ fn install_release(ctx: &Context, release: &Release) -> Result<Installed> {
             toolchain.id,
             toolchain.path.display()
         );
+        if matches!(how, How::Source(_)) {
+            println!(
+                "  to build it again, run `cxvm remove {}` first",
+                toolchain.id
+            );
+        }
         Ok(toolchain)
     };
     if let Some(toolchain) = present(&store)? {
@@ -638,30 +827,52 @@ fn install_release(ctx: &Context, release: &Release) -> Result<Installed> {
     if let Some(toolchain) = present(&store)? {
         return already(toolchain);
     }
-    println!(
-        "Installing {} ({} download)",
-        release.id,
-        human_size(release.size)
-    );
-    let backend = backends::backend_for(release.id.kind());
-    let report = backends::install(&store, &lock, release, backend)?;
+    let (report, log) = match how {
+        How::Prebuilt => {
+            println!(
+                "Installing {} ({} download)",
+                release.id,
+                human_size(release.size)
+            );
+            let backend = backends::backend_for(release.id.kind());
+            (backends::install(&store, &lock, release, backend)?, None)
+        }
+        How::Source(options) => {
+            let host = host_compiler(ctx, &store, options)?;
+            let path_var = ctx.path_var.as_deref();
+            let builder = GnuSource::new(&store, catalog, release, host, path_var, options)?;
+            println!(
+                "Building {} from source ({} download)\n{}",
+                release.id,
+                human_size(release.size),
+                builder.summary()
+            );
+            let report = backends::install(&store, &lock, release, &builder)?;
+            (report, Some(builder.log().to_owned()))
+        }
+    };
     drop(lock);
     let toolchain = report.toolchain;
     if let Some(problem) = report.warning {
-        let hint = match toolchain.id.kind() {
-            Kind::Clang => {
+        let hint = match (toolchain.id.kind(), how) {
+            (Kind::Clang, _) => {
                 "clang builds C++ with the newest GCC installation it finds on the host. \
                  Either there is none (install g++ or your distribution's libstdc++ development \
                  package), or its libstdc++ is too new for this clang: pass an older one with \
                  `--gcc-install-dir=/usr/lib/gcc/x86_64-linux-gnu/<version>` (clang 16 and \
                  later). Pinning that GCC in .cxvmrc arrives in M6"
             }
-            Kind::Gcc => {
+            (Kind::Gcc, How::Prebuilt) => {
                 "this GCC builds against the host's C library. Either its headers are missing \
                  (install `libc6-dev` on Debian/Ubuntu, `glibc-devel` on Fedora/RHEL), or the \
                  linker bundled with this build is too old for the host's libraries (its \
                  errors mention `.relr.dyn`): pass `-B/usr/bin` to use the host's linker, or \
                  install a newer release of the same major (`cxvm list --available`). See \
+                 docs/backends.md"
+            }
+            (Kind::Gcc, How::Source(_)) => {
+                "a GCC built from source uses the host's assembler, linker and C library: \
+                 check that `as` and `ld` (binutils) are on PATH when it runs. See \
                  docs/backends.md"
             }
         };
@@ -672,10 +883,17 @@ fn install_release(ctx: &Context, release: &Release) -> Result<Installed> {
         );
     }
     println!("Installed {} in {}", toolchain.id, toolchain.path.display());
-    println!(
-        "  the downloaded archive stays in {}; delete it to free space",
-        report.archive.display()
-    );
+    match log {
+        None => println!(
+            "  the downloaded archive stays in {}; delete it to free space",
+            report.archive.display()
+        ),
+        Some(log) => println!(
+            "  the build log is {}; the downloaded sources stay in {}",
+            log.display(),
+            ctx.paths.downloads_dir().display()
+        ),
+    }
     Ok(toolchain)
 }
 
@@ -1069,7 +1287,7 @@ mod tests {
             release("gcc@13.4.0", 139 * MIB),
         ];
         let installed: ToolchainId = "gcc@13.3.0".parse().unwrap();
-        let text = render_available(&releases, |id| *id == installed, "the catalog");
+        let text = render_available(&releases, &[], |id| *id == installed, "the catalog");
         assert_eq!(
             text,
             "Installable toolchains (* = installed), from the catalog:\n\
@@ -1089,7 +1307,7 @@ mod tests {
         let releases: Vec<Release> = (0..=8)
             .map(|patch| release(&format!("clang@22.1.{patch}"), 1900 * MIB))
             .collect();
-        let text = render_available(&releases, |_| false, "the catalog");
+        let text = render_available(&releases, &[], |_| false, "the catalog");
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(
             lines[2..5],
@@ -1106,8 +1324,57 @@ mod tests {
     #[test]
     fn available_without_releases_is_the_heading_only() {
         assert_eq!(
-            render_available(&[], |_| false, "/c.toml (CXVM_CATALOG)"),
+            render_available(&[], &[], |_| false, "/c.toml (CXVM_CATALOG)"),
             "Installable toolchains (* = installed), from /c.toml (CXVM_CATALOG):\n"
         );
+    }
+
+    #[test]
+    fn available_lists_source_only_releases_under_their_own_title() {
+        let releases = [
+            release("clang@19.1.7", 1638 * MIB),
+            release("gcc@13.4.0", 139 * MIB),
+        ];
+        let sources = [
+            release("gcc@10.4.0", 72 * MIB),
+            release("gcc@10.5.0", 75 * MIB),
+            release("gcc@16.2.0", 103 * MIB),
+        ];
+        let source_only: Vec<&Release> = sources.iter().collect();
+        let installed: ToolchainId = "gcc@10.5.0".parse().unwrap();
+        let text = render_available(
+            &releases,
+            &source_only,
+            |id| *id == installed,
+            "the catalog",
+        );
+        assert_eq!(
+            text,
+            "Installable toolchains (* = installed), from the catalog:\n\
+             \n\
+             \x20 gcc    download  versions\n\
+             \x20 13      139 MiB  13.4.0\n\
+             \n\
+             \x20 clang  download  versions\n\
+             \x20 19      1.6 GiB  19.1.7\n\
+             \n\
+             No prebuilt archive, built with `cxvm install <id> --from-source`:\n\
+             \n\
+             \x20 gcc    download  versions\n\
+             \x20 16      103 MiB  16.2.0\n\
+             \x20 10       75 MiB  10.5.0* 10.4.0\n"
+        );
+        let text = render_available(&[], &source_only, |_| false, "the catalog");
+        assert!(text.contains(":\n\nNo prebuilt archive"), "{text}");
+    }
+
+    #[test]
+    fn only_a_clear_yes_starts_a_build() {
+        for answer in ["y\n", "Y\n", " yes \n", "YES"] {
+            assert!(is_yes(answer), "{answer:?}");
+        }
+        for answer in ["", "\n", "n\n", "no\n", "yep\n", "j\n"] {
+            assert!(!is_yes(answer), "{answer:?}");
+        }
     }
 }

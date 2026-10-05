@@ -62,7 +62,7 @@ fn version_flag_works() {
 
 #[test]
 fn stubs_fail_with_not_implemented() {
-    let invocations: &[&[&str]] = &[&["install", "gcc@13", "--from-source"], &["doctor"]];
+    let invocations: &[&[&str]] = &[&["doctor"]];
     // In a sandbox: a stub that becomes a real command must never touch the real store.
     let sandbox = Sandbox::new();
     for args in invocations {
