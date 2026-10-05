@@ -1,6 +1,10 @@
 //! Generated project files: `toolchain.cmake`, `env`, `.gitignore` entry (M2),
 //! `CMakeUserPresets.json` and VS Code settings (M6).
 
+mod json;
+pub mod presets;
+pub mod vscode;
+
 use std::ffi::{OsStr, OsString};
 use std::fmt::Write as _;
 use std::fs;
@@ -317,6 +321,28 @@ pub fn render_env(activation: &Activation, shell: Shell) -> String {
 
 /// Name of the generated, gitignored per-project folder.
 pub const PROJECT_DIR: &str = ".cxvm";
+
+/// `label` as a file or directory name: `gcc-13.3.0` for `gcc@13.3.0`. It names the build
+/// directory cxvm suggests for a toolchain, `build/<slug>`.
+pub fn slug(label: &str) -> String {
+    label.replace('@', "-")
+}
+
+/// A file that an integration wants written.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileEdit {
+    pub path: PathBuf,
+    pub text: String,
+    /// What to tell the user once it is written, if anything.
+    pub summary: Option<String>,
+}
+
+impl FileEdit {
+    /// Replaces the file atomically, creating its directory if needed.
+    pub fn write(&self) -> Result<()> {
+        files::write_atomic(&self.path, &self.text)
+    }
+}
 
 /// Writes `<root>/.cxvm/`: `toolchain.cmake`, `env`, and `current` as a symlink to `prefix`
 /// (removed when `prefix` is `None`, i.e. for `system`).

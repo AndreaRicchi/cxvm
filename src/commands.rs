@@ -14,7 +14,7 @@ use crate::config::Config;
 use crate::detect;
 use crate::error::{Error, Result};
 use crate::files;
-use crate::integrations::{self, Activation, Gitignore, Shell};
+use crate::integrations::{self, Activation, FileEdit, Gitignore, Shell, presets, vscode};
 use crate::paths::Paths;
 use crate::project::{self, ProjectRc, Resolution, Source};
 use crate::store::{Installed, Link, Store};
@@ -602,34 +602,86 @@ fn project_paired_gcc(ctx: &Context, store: &Store, target: &Target) -> Result<O
     paired_gcc(store, target, request.as_ref(), &rc)
 }
 
-/// Regenerates `<root>/.cxvm/` for `target` as `rc`, the project's `.cxvmrc`, asks: the
-/// pairing of a clang, and the integrations.
-fn generate_project(ctx: &Context, root: &Path, target: &Target, rc: &ProjectRc) -> Result<()> {
-    let rc_path = root.join(project::RC_FILE);
-    let gcc = paired_gcc(&ctx.store(), target, rc.clang_gcc.as_ref(), &rc_path)?;
-    let activation = target.activation(ctx, gcc.as_ref())?;
-    integrations::write_project_dir(root, &activation, target.prefix())?;
-    println!(
-        "Generated {} (toolchain.cmake, env{})",
-        root.join(integrations::PROJECT_DIR).display(),
-        if target.prefix().is_some() {
-            ", current"
-        } else {
-            ""
+/// Everything `cxvm use` and `cxvm install` write in a project besides `.cxvmrc`, worked out
+/// before any of it is written, so that a problem leaves the project as it was.
+#[derive(Debug)]
+struct ProjectPlan {
+    activation: Activation,
+    /// What `.cxvm/current` points at.
+    prefix: Option<PathBuf>,
+    gitignore: bool,
+    /// Files of the integrations that need writing.
+    edits: Vec<FileEdit>,
+    notes: Vec<String>,
+}
+
+impl ProjectPlan {
+    /// What the project at `root` needs for `target`, as `rc`, its `.cxvmrc`, asks: the
+    /// pairing of a clang, and the integrations.
+    fn new(ctx: &Context, root: &Path, target: &Target, rc: &ProjectRc) -> Result<Self> {
+        let store = ctx.store();
+        let rc_path = root.join(project::RC_FILE);
+        let gcc = paired_gcc(&store, target, rc.clang_gcc.as_ref(), &rc_path)?;
+        let activation = target.activation(ctx, gcc.as_ref())?;
+        let mut edits = Vec::new();
+        let mut notes = Vec::new();
+        if rc.integrations.cmake_presets {
+            edits.extend(presets::plan(root, &activation)?);
         }
-    );
-    if let Some(pairing) = &activation.pairing {
+        if rc.integrations.vscode {
+            let known = store.installed()?;
+            let request = vscode::Request::new(
+                &activation,
+                known.iter().filter_map(|toolchain| toolchain.cc.parent()),
+                &ctx.paths.toolchains_dir(),
+            );
+            let (edit, left_alone) = vscode::plan(root, &request)?;
+            edits.extend(edit);
+            notes = left_alone;
+        }
+        Ok(Self {
+            activation,
+            prefix: target.prefix().map(Path::to_path_buf),
+            gitignore: rc.integrations.gitignore,
+            edits,
+            notes,
+        })
+    }
+
+    /// Regenerates `<root>/.cxvm/` and the files of the integrations.
+    fn write(&self, root: &Path) -> Result<()> {
+        integrations::write_project_dir(root, &self.activation, self.prefix.as_deref())?;
         println!(
-            "Clang uses the headers and libstdc++ of {} ({})",
-            pairing.gcc, pairing.flag
+            "Generated {} (toolchain.cmake, env{})",
+            root.join(integrations::PROJECT_DIR).display(),
+            if self.prefix.is_some() {
+                ", current"
+            } else {
+                ""
+            }
         );
+        if let Some(pairing) = &self.activation.pairing {
+            println!(
+                "Clang uses the headers and libstdc++ of {} ({})",
+                pairing.gcc, pairing.flag
+            );
+        }
+        for edit in &self.edits {
+            edit.write()?;
+            if let Some(summary) = &edit.summary {
+                println!("{summary}");
+            }
+        }
+        for note in &self.notes {
+            eprintln!("note: {note}");
+        }
+        if self.gitignore
+            && let Gitignore::Added(path) = integrations::ensure_gitignored(root)?
+        {
+            println!("Added {}/ to {}", integrations::PROJECT_DIR, path.display());
+        }
+        Ok(())
     }
-    if rc.integrations.gitignore
-        && let Gitignore::Added(path) = integrations::ensure_gitignored(root)?
-    {
-        println!("Added {}/ to {}", integrations::PROJECT_DIR, path.display());
-    }
-    Ok(())
 }
 
 /// What `cxvm use --gcc <id>` writes to `[clang] gcc`: the exact id of an installed GCC, or
@@ -683,9 +735,9 @@ pub fn use_(ctx: &Context, id: &str, gcc: Option<&str>) -> Result<()> {
     let root = project::project_root(&ctx.cwd);
     let rc = root.join(project::RC_FILE);
     let pending = project::edit_rc(&rc, &exact, clang_gcc.as_ref())?;
-    // Fail on an incomplete toolchain or pairing before touching any file.
-    let paired = paired_gcc(&store, &target, pending.rc.clang_gcc.as_ref(), &rc)?;
-    target.activation(ctx, paired.as_ref())?;
+    // Fail on an incomplete toolchain, a pairing that cannot be had or a file cxvm cannot
+    // edit before touching anything.
+    let plan = ProjectPlan::new(ctx, &root, &target, &pending.rc)?;
 
     pending.write()?;
     if exact == spec {
@@ -693,18 +745,29 @@ pub fn use_(ctx: &Context, id: &str, gcc: Option<&str>) -> Result<()> {
     } else {
         println!("Pinned {exact} (from {spec}) in {}", rc.display());
     }
-    generate_project(ctx, &root, &target, &pending.rc)?;
+    plan.write(&root)?;
 
-    let build = format!("build/{}", exact.to_string().replace('@', "-"));
-    let toolchain_file = format!("{}/toolchain.cmake", integrations::PROJECT_DIR);
     println!("Configure a build with:");
-    if root == ctx.cwd {
-        println!("  cmake -S . -B {build} -DCMAKE_TOOLCHAIN_FILE={toolchain_file}");
+    let here = root == ctx.cwd;
+    let root = root.display();
+    if pending.rc.integrations.cmake_presets {
+        let preset = presets::preset_name(&exact.to_string());
+        if here {
+            println!("  cmake --preset {preset}");
+        } else {
+            println!("  cmake -S {root} --preset {preset}");
+        }
     } else {
-        let root = root.display();
-        println!(
-            "  cmake -S {root} -B {root}/{build} -DCMAKE_TOOLCHAIN_FILE={root}/{toolchain_file}"
-        );
+        let build = format!("build/{}", integrations::slug(&exact.to_string()));
+        let toolchain_file = format!("{}/toolchain.cmake", integrations::PROJECT_DIR);
+        if here {
+            println!("  cmake -S . -B {build} -DCMAKE_TOOLCHAIN_FILE={toolchain_file}");
+        } else {
+            println!(
+                "  cmake -S {root} -B {root}/{build} \
+                 -DCMAKE_TOOLCHAIN_FILE={root}/{toolchain_file}"
+            );
+        }
     }
     if let Some(value) = ctx.env_compiler.as_deref().filter(|v| !v.is_empty()) {
         eprintln!(
@@ -811,7 +874,7 @@ pub fn install_pinned(ctx: &Context, build: Option<&source::Options>) -> Result<
         find_or_install(ctx, gcc, clang_gcc_context(&rc), build)?;
     }
     let root = rc.parent().unwrap_or(&ctx.cwd).to_owned();
-    generate_project(ctx, &root, &target, &project)
+    ProjectPlan::new(ctx, &root, &target, &project)?.write(&root)
 }
 
 /// The toolchain `spec` selects, installed first if it is missing and the catalog has it.
