@@ -28,6 +28,7 @@ signal-hook = "0.4"
 tar = { version = "0.4", default-features = false }
 thiserror = "2.0"
 toml = "1.1"
+toml_edit = { version = "0.25", default-features = false, features = ["parse", "display"] }
 ureq = { version = "3.4", default-features = false, features = ["rustls"] }
 
 [dev-dependencies]

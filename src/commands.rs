@@ -542,7 +542,7 @@ pub fn use_(ctx: &Context, id: &str) -> Result<()> {
     let root = project::project_root(&ctx.cwd);
     let rc = root.join(project::RC_FILE);
     let exact = target.spec();
-    project::write_rc(&rc, &exact)?;
+    project::write_rc(&rc, &exact, None)?;
     if exact == spec {
         println!("Pinned {exact} in {}", rc.display());
     } else {

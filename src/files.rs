@@ -54,28 +54,36 @@ pub(crate) fn is_executable(path: &Path) -> bool {
         .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
 }
 
-/// Reads and parses a TOML file; `Ok(None)` if it does not exist. `hint` is attached to parse
-/// errors and should say how to fix the file.
-pub(crate) fn read_toml<T: DeserializeOwned>(path: &Path, hint: &str) -> Result<Option<T>> {
-    let text = match fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(source) => {
-            return Err(Error::Io {
-                action: "read",
-                path: path.to_owned(),
-                source,
-                hint: "make sure it is a readable file, or remove it",
-            });
-        }
-    };
-    toml::from_str(&text)
-        .map(Some)
-        .map_err(|err| Error::InvalidFile {
+/// Reads a text file; `Ok(None)` if it does not exist.
+pub(crate) fn read_text(path: &Path) -> Result<Option<String>> {
+    match fs::read_to_string(path) {
+        Ok(text) => Ok(Some(text)),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(source) => Err(Error::Io {
+            action: "read",
             path: path.to_owned(),
-            message: err.to_string().trim_end().to_owned(),
-            hint: hint.to_owned(),
-        })
+            source,
+            hint: "make sure it is a readable file, or remove it",
+        }),
+    }
+}
+
+/// Parses `text`, the content of the TOML file at `path`. `hint` is attached to parse errors
+/// and should say how to fix the file.
+pub(crate) fn parse_toml<T: DeserializeOwned>(path: &Path, text: &str, hint: &str) -> Result<T> {
+    toml::from_str(text).map_err(|err| Error::InvalidFile {
+        path: path.to_owned(),
+        message: err.to_string().trim_end().to_owned(),
+        hint: hint.to_owned(),
+    })
+}
+
+/// Reads and parses a TOML file; `Ok(None)` if it does not exist. `hint` is as for
+/// [`parse_toml`].
+pub(crate) fn read_toml<T: DeserializeOwned>(path: &Path, hint: &str) -> Result<Option<T>> {
+    read_text(path)?
+        .map(|text| parse_toml(path, &text, hint))
+        .transpose()
 }
 
 /// Replaces `path` with `contents` atomically: a temp file in the same directory is written,
