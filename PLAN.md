@@ -11,7 +11,7 @@
 - [x] M3 — Clang prebuilt backend
 - [x] M4 — GCC prebuilt backend + runtime libs
 - [x] M5 — GCC from source
-- [ ] M6 — Clang ↔ libstdc++ pairing & IDE integration
+- [x] M6 — Clang ↔ libstdc++ pairing & IDE integration
 - [ ] M7 — Doctor, safety & polish
 - [ ] M8 — Release
 
@@ -90,6 +90,20 @@ _(Append dated one-line entries: what was decided and why.)_
 - 2026-10-05: A from-source GCC has the layout of an xPack one (`lib64/libstdc++.so.6`, triple `x86_64-pc-linux-gnu`) but no binutils: it runs the `as` and `ld` on `PATH`. Its `cc1` links the host compiler's libstdc++ statically.
 - 2026-10-05: Found while testing on Ubuntu 26.04: GCC 16.2.0 builds as is (7m19s on 22 CPUs); GCC 10.5.0 needs `--configure-arg=--disable-libsanitizer` because glibc 2.42 dropped `<termio.h>`, with either host compiler. cxvm does not add the argument itself; the failure names it. See docs/backends.md.
 - 2026-10-05: The time estimate is `4 + 70 / jobs` minutes (from the 16.2.0 build), times three for `--bootstrap`, which was not measured.
+- 2026-10-05: `--gcc-install-dir` from clang 16 on, `--gcc-toolchain=<prefix>` before: 15.0.6 rejects the former, 16.0.4 accepts it (the releases in between were not tried). A clang before 16 is refused a GCC whose prefix holds other GCCs, since it would take the newest. See docs/backends.md.
+- 2026-10-05: The pairing option is a second element of `CMAKE_<LANG>_COMPILER`, not `CMAKE_<LANG>_FLAGS_INIT`, which `-DCMAKE_CXX_FLAGS=…` replaces without a word. `env` and `exec` carry it in `CC`/`CXX` (`CC="clang --gcc-install-dir=…"`); a bare `clang++` on `PATH` gets nothing, as cxvm does not wrap.
+- 2026-10-05: New option `cxvm use <clang> --gcc <id|system>` writes the exact id to `[clang] gcc`; a hand-written partial id resolves to the highest installed GCC. `gcc = "system"` or no table means clang's own detection. The table is kept, and ignored, while a GCC or `system` is pinned.
+- 2026-10-05: `[clang]` lives in `.cxvmrc` only, not in `config.toml`: the pairing applies to whichever clang is active in the project (also one chosen by `CXVM_COMPILER`) and to no clang outside a project.
+- 2026-10-05: `cxvm install` (no id) also installs a missing paired GCC; `current` prints `with <gcc> (…)` and `--json` gains `clang_gcc` (null without a pairing); a pairing that is not installed fails `current`, `env`, `exec`, `use` and `install` with the install command.
+- 2026-10-05: `use` edits `.cxvmrc` in place (`toml_edit`): comments and tables survive, and a file that would still be invalid is reported, not replaced (updates the 2026-09-30 "rewrites the whole file" entry). `use` and `install` work out every file before writing the first, so a failure leaves the project as it was.
+- 2026-10-05: `[integrations]`: `gitignore` defaults to true (M2 behaviour, now opt-out), `cmake_presets` and `vscode` to false.
+- 2026-10-05: Presets are named `cxvm-<kind>-<version>`, build in `build/<kind>-<version>` and each has its own toolchain file, `.cxvm/toolchains/<kind>-<version>.cmake`, because `.cxvm/toolchain.cmake` only describes the current pin. Compiler settings inline as `cacheVariables` were tried and dropped: a one-language project then warns that `CMAKE_C_COMPILER` was not used. Needs presets version 3 (CMake 3.21); an older file is reported, not upgraded.
+- 2026-10-05: cxvm only adds or rewrites the preset of the current pin. Presets of removed toolchains are not dropped (the opening plan said they would be): a user preset may inherit from one, and a dangling reference makes CMake reject the whole file. Left to M7's `doctor`.
+- 2026-10-05: VS Code: clangd gets `--query-driver=<bin>/*` for a GCC pin only. On a clang driver it makes clangd 21 query the driver without the pairing option and fall back to the host's GCC; clangd follows a clang, paired or not, from `compile_commands.json` alone.
+- 2026-10-05: Beyond the two keys of §8, the VS Code integration sets clangd's `--compile-commands-dir` and `cmake.buildDirectory` to `build/<kind>-<version>`, so that the editor uses the per-toolchain build directory; a value cxvm did not write is left alone with a note. `--query-driver` globs of other compilers are kept; cxvm's are recognised by the store path or a known toolchain's bin directory.
+- 2026-10-05: New dependencies: `toml_edit` (shares `toml`'s parser crates) and `jsonc-parser` (no dependencies; `.vscode/settings.json` is JSON with comments). Both files are edited through a syntax tree, never re-serialised.
+- 2026-10-05: The "done when" was shown with a scripted LSP session against clangd 21.1.8 started with the generated `clangd.arguments`: `std::vector` resolves into the pinned GCC's headers, and into the paired GCC's for clang 15 and 17. VS Code itself was not driven.
+- 2026-10-05: For M7: a compiler set in a toolchain file is not in `CMakeCache.txt` (`CMAKE_<LANG>_COMPILER` is then a normal variable); the doctor check has to read `CMakeFiles/<version>/CMake<LANG>Compiler.cmake`, or follow the cache's `CMAKE_TOOLCHAIN_FILE`.
 
 ---
 
@@ -179,10 +193,10 @@ compiler = "gcc@13.3.0"
 [clang]
 gcc = "gcc@13.3.0"   # which GCC's libstdc++ clang should use; default: system
 
-[integrations]       # opt-in, like FVM's updateVscodeSettings
-cmake_presets = true
-vscode = true
-gitignore = true
+[integrations]       # like FVM's updateVscodeSettings
+cmake_presets = true # default: false
+vscode = true        # default: false
+gitignore = true     # default: true
 ```
 
 ```
@@ -190,6 +204,7 @@ gitignore = true
   current -> ~/.local/share/cxvm/toolchains/gcc/13.3.0
   toolchain.cmake      generated
   env                  generated, source-able
+  toolchains/          with cmake_presets: one toolchain file per preset
 ```
 
 ### Resolution order
@@ -222,8 +237,17 @@ set(CMAKE_MODULE_LINKER_FLAGS_INIT "-Wl,-rpath,/home/me/.local/share/cxvm/toolch
 Intended use: `cmake -S . -B build/gcc-13.3.0 -DCMAKE_TOOLCHAIN_FILE=.cxvm/toolchain.cmake`
 (one build dir per toolchain).
 
-`exec` / `env` prepend the toolchain's `bin/` to PATH and set `CC` / `CXX`. They do **not** set
-`LD_LIBRARY_PATH`; runtime libraries are handled with rpath.
+For a clang paired with a GCC (`[clang] gcc`), the option that selects that GCC is passed with
+the compiler, and the rpath is that GCC's:
+
+```cmake
+set(CMAKE_C_COMPILER   "…/toolchains/clang/17.0.6/bin/clang"   "--gcc-install-dir=…/toolchains/gcc/13.3.0/lib/gcc/x86_64-pc-linux-gnu/13.3.0")
+set(CMAKE_CXX_COMPILER "…/toolchains/clang/17.0.6/bin/clang++" "--gcc-install-dir=…/toolchains/gcc/13.3.0/lib/gcc/x86_64-pc-linux-gnu/13.3.0")
+```
+
+`exec` / `env` prepend the toolchain's `bin/` to PATH and set `CC` / `CXX` (followed by the
+pairing option for a paired clang). They do **not** set `LD_LIBRARY_PATH`; runtime libraries
+are handled with rpath.
 
 ## 5. CLI (end state)
 
@@ -232,7 +256,7 @@ Intended use: `cmake -S . -B build/gcc-13.3.0 -DCMAKE_TOOLCHAIN_FILE=.cxvm/toolc
 | `cxvm install [<id>] [--from-source]` | Install a toolchain. With no id: install what `.cxvmrc` needs and regenerate `.cxvm/`. With `--from-source`: build GCC, optionally with `--bootstrap`, `--host-compiler <id>`, `-j <n>`, `--configure-arg <arg>` |
 | `cxvm remove <id> [--force]` | Remove from the store (refuse if it's the global default unless `--force`) |
 | `cxvm list [--available] [--json]` | Installed toolchains (marking active/global), or installable versions |
-| `cxvm use <id>` | Pin in the current project: write `.cxvmrc`, (re)generate `.cxvm/` |
+| `cxvm use <id> [--gcc <id>]` | Pin in the current project: write `.cxvmrc`, (re)generate `.cxvm/` and the opted-in integrations. With `--gcc`: pair the clang with that GCC's libstdc++ |
 | `cxvm global <id>` | Set the default outside projects |
 | `cxvm current [--json]` | Show the active toolchain and why |
 | `cxvm exec -- <cmd…>` | Run a command with the active toolchain's environment |
