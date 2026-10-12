@@ -13,7 +13,7 @@
 - [x] M5 — GCC from source
 - [x] M6 — Clang ↔ libstdc++ pairing & IDE integration
 - [x] M7 — Doctor, safety & polish
-- [ ] M8 — Release
+- [x] M8 — Release
 
 ### Decisions log
 
@@ -115,6 +115,15 @@ _(Append dated one-line entries: what was decided and why.)_
 - 2026-10-12: Build dirs are searched up to three levels below the project root (hidden dirs, symlinks and nested projects skipped). A build dir configured with a cxvm toolchain file must match what that file names now (error), unless it is named after the toolchain it builds with, as `cxvm use` suggests (`build/gcc-13.3.0`); one without a toolchain file is compared with the pin (warning, as it may be on purpose: the opening plan said error); foreign toolchain files are skipped.
 - 2026-10-12: `remove` also refuses, without `--force`, the current directory's pin (`.cxvmrc` or `CXVM_COMPILER`) and the `[clang] gcc` of the nearest `.cxvmrc` while a clang is active, and names the project's build dirs that build with the toolchain (updates the 2026-10-03 entry). Other projects cannot be known.
 - 2026-10-12: `Error::NotImplemented` went with the last stub; a unit test renders every `Error` variant through a match without catch-all and requires a `hint:` line. `--json` for `list`/`current` was already done in M1; `doctor` has none.
+- 2026-10-12: The name `cxvm` is free: crates.io has no crate of that name or a similar one, and the GitHub repositories called `cxvm` are empty ones with no stars. No rename.
+- 2026-10-12: Tags are `v<version>` (§8 said `0.1.0`). Pushing one runs `release.yml`: CI through `workflow_call`, then a **draft** GitHub release built from CI's musl archive, which the maintainer publishes. `ci.yml` now runs on branch pushes only, so that a tag runs CI once. The `v0.1.0` tag is made after the M8 review.
+- 2026-10-12: The release archive is `cxvm-x86_64-unknown-linux-musl.tar.gz`, without a version, so that `releases/latest/download/` is a stable URL. It holds a directory of that name with the binary, the licences, README and CHANGELOG, packed reproducibly (sorted, owner 0, commit time, `gzip -n`), and has a `.sha256` in `sha256sum` format.
+- 2026-10-12: The release job refuses a tag whose binary reports another version, or whose version has no `## [x.y.z]` section in CHANGELOG.md (Keep a Changelog); that section is the release notes, so its links are absolute.
+- 2026-10-12: The archive gets a build provenance attestation (`actions/attest-build-provenance@v4`, `gh attestation verify`). The step is skipped while the repository is private: GitHub attests private repositories only on Enterprise Cloud.
+- 2026-10-12: cxvm is published on crates.io, by hand (`cargo publish`), not by the workflow. The package `include`s `src`, `catalog` (embedded with `include_str!`), `tests` (otherwise cargo warns about every test target), README, CHANGELOG and the licences.
+- 2026-10-12: Rust 1.89 had never been tried; it builds, and a CI job keeps it so with `cargo +1.89 check --locked` (`+1.89` because `rust-toolchain.toml` selects stable).
+- 2026-10-12: `install.sh` is POSIX sh, uses curl or wget, refuses an archive that does not match its `.sha256`, and installs into `$XDG_BIN_HOME` or `~/.local/bin` through a temporary file and a rename. No sudo, no startup files edited; it prints the `PATH` line instead. `CXVM_VERSION`, `CXVM_BIN_DIR` and `CXVM_RELEASES_URL` (for mirrors and tests) mirror its options. It is a release asset, so the script matches the release it installs. Tested with dash and bash against a local server, with busybox's wget, and in `ubuntu:24.04`.
+- 2026-10-12: Downloads honour `ALL_PROXY`/`HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY` (ureq's default, checked with a dead proxy). A TLS-intercepting proxy still fails (bundled roots, 2026-10-03); an archive put in `~/.cache/cxvm/downloads/` by hand is verified and used instead. Both are in the README FAQ.
 
 ---
 
