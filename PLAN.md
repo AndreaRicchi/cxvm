@@ -12,7 +12,7 @@
 - [x] M4 — GCC prebuilt backend + runtime libs
 - [x] M5 — GCC from source
 - [x] M6 — Clang ↔ libstdc++ pairing & IDE integration
-- [ ] M7 — Doctor, safety & polish
+- [x] M7 — Doctor, safety & polish
 - [ ] M8 — Release
 
 ### Decisions log
@@ -104,6 +104,17 @@ _(Append dated one-line entries: what was decided and why.)_
 - 2026-10-05: New dependencies: `toml_edit` (shares `toml`'s parser crates) and `jsonc-parser` (no dependencies; `.vscode/settings.json` is JSON with comments). Both files are edited through a syntax tree, never re-serialised.
 - 2026-10-05: The "done when" was shown with a scripted LSP session against clangd 21.1.8 started with the generated `clangd.arguments`: `std::vector` resolves into the pinned GCC's headers, and into the paired GCC's for clang 15 and 17. VS Code itself was not driven.
 - 2026-10-05: For M7: a compiler set in a toolchain file is not in `CMakeCache.txt` (`CMAKE_<LANG>_COMPILER` is then a normal variable); the doctor check has to read `CMakeFiles/<version>/CMake<LANG>Compiler.cmake`, or follow the cache's `CMAKE_TOOLCHAIN_FILE`.
+- 2026-10-12: No `cxvm catalog update`: a fetched catalog would be a second trust root (its sha256s decide what runs), the catalog has no format version (`deny_unknown_fields`), and new releases come with cxvm releases; `CXVM_CATALOG=<file>` stays the way to use a newer one. See docs/backends.md.
+- 2026-10-12: Labels (`error:`, `warning:`, `note:`, `hint:`, doctor's `ok:`) are coloured through `anstream`/`anstyle`, already in Cargo.lock through clap, so colour follows clap's rules: `NO_COLOR`, `CLICOLOR`, `CLICOLOR_FORCE`, `TERM=dumb`, terminals only. One `output` module prints them.
+- 2026-10-12: `-v` is a process-wide flag set once in `cli::run` (logic stays free of process state otherwise); `debug:` lines cover resolution, store/cache/catalog, every process run (`files::run_captured`) with its exit status, downloads, files written and skipped build dirs. No `log` crate.
+- 2026-10-12: `prune` deletes all of `downloads/` (`.part` files included) and `logs/` under the store lock, so never an archive an install is fetching; `--dry-run` lists. Install messages point at it (closes the 2026-10-03 "kept until `prune`" note). Sizes below 1 MiB print in KiB.
+- 2026-10-12: `doctor` prints sections Store, Active toolchain, Project (when a `.cxvmrc` is found) and Cache; findings are errors, warnings or notes, each with a hint; it exits 1 only with an error (`Error::Diagnosed`). It takes no lock and creates nothing. A toolchain whose files are gone is one store error; where it is selected (global, pin) a note points there.
+- 2026-10-12: Doctor store checks: strays (`Store::scan`, which `installed()` now filters), `.cxvm-meta.toml`, drivers, the version probe, `ldd` on both drivers and GCC's `cc1plus` (`-print-prog-name`), links that are gone (error), hidden by a store entry or report another version (warnings), the global default, `staging/` (a note while the lock is held).
+- 2026-10-12: Doctor project checks: `.cxvm/current`, `toolchain.cmake` and `env` are compared with what `cxvm install` would write now (a dangling `current` is an error, a stale file a warning), the `[clang] gcc` pairing, and `cxvm-…` presets of toolchains no longer installed or without their toolchain file (closes the 2026-10-05 "left to M7's doctor" entry). Without the pin installed, the Active section reports it and `.cxvm/` is not checked.
+- 2026-10-12: Found with CMake 4.2.3: a build dir keeps its first compiler when the toolchain file changes, even when `-DCMAKE_TOOLCHAIN_FILE` is passed again, without a message; the pairing option is recorded as `CMAKE_<LANG>_COMPILER_ARG1`; a relative toolchain file is stored as given (resolved against the build tree, then the source tree). §4's "CMake notices the change" was wrong and is corrected.
+- 2026-10-12: Build dirs are searched up to three levels below the project root (hidden dirs, symlinks and nested projects skipped). A build dir configured with a cxvm toolchain file must match what that file names now (error), unless it is named after the toolchain it builds with, as `cxvm use` suggests (`build/gcc-13.3.0`); one without a toolchain file is compared with the pin (warning, as it may be on purpose: the opening plan said error); foreign toolchain files are skipped.
+- 2026-10-12: `remove` also refuses, without `--force`, the current directory's pin (`.cxvmrc` or `CXVM_COMPILER`) and the `[clang] gcc` of the nearest `.cxvmrc` while a clang is active, and names the project's build dirs that build with the toolchain (updates the 2026-10-03 entry). Other projects cannot be known.
+- 2026-10-12: `Error::NotImplemented` went with the last stub; a unit test renders every `Error` variant through a match without catch-all and requires a `hint:` line. `--json` for `list`/`current` was already done in M1; `doctor` has none.
 
 ---
 
@@ -218,8 +229,10 @@ gitignore = true     # default: true
 
 It must use the **resolved absolute store path**, not the `.cxvm/current` symlink. CMake caches
 the compiler path; if it went through the symlink, re-pinning would silently swap compilers under
-an existing build dir. With real paths, CMake notices the change. The symlink is for humans,
-IDEs and PATH.
+an existing build dir. With real paths, a build dir keeps the compiler it was configured with:
+CMake does not notice the change (checked with 4.2.3 in M7), but each build dir stays
+consistent, and `cxvm doctor` reports one that no longer matches its toolchain file. The
+symlink is for humans, IDEs and PATH.
 
 Example (GCC):
 
@@ -254,7 +267,8 @@ are handled with rpath.
 | Command | Purpose |
 |---|---|
 | `cxvm install [<id>] [--from-source]` | Install a toolchain. With no id: install what `.cxvmrc` needs and regenerate `.cxvm/`. With `--from-source`: build GCC, optionally with `--bootstrap`, `--host-compiler <id>`, `-j <n>`, `--configure-arg <arg>` |
-| `cxvm remove <id> [--force]` | Remove from the store (refuse if it's the global default unless `--force`) |
+| `cxvm remove <id> [--force]` | Remove from the store (refuse if it's the global default, or the current directory's pin or `[clang] gcc`, unless `--force`) |
+| `cxvm prune [--dry-run]` | Delete the download cache and the logs of builds from source |
 | `cxvm list [--available] [--json]` | Installed toolchains (marking active/global), or installable versions |
 | `cxvm use <id> [--gcc <id>]` | Pin in the current project: write `.cxvmrc`, (re)generate `.cxvm/` and the opted-in integrations. With `--gcc`: pair the clang with that GCC's libstdc++ |
 | `cxvm global <id>` | Set the default outside projects |
