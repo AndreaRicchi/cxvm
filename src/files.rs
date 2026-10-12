@@ -58,6 +58,23 @@ pub(crate) fn run_captured(command: &mut Command) -> io::Result<Output> {
     result
 }
 
+/// The bytes the files below `path` take, `path` included; symlinks are not followed and what
+/// cannot be read counts as nothing.
+pub(crate) fn tree_size(path: &Path) -> u64 {
+    let Ok(meta) = path.symlink_metadata() else {
+        return 0;
+    };
+    if !meta.is_dir() {
+        return meta.len();
+    }
+    fs::read_dir(path)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.ok())
+        .map(|entry| tree_size(&entry.path()))
+        .sum()
+}
+
 /// Whether `name` is one ordinary, visible path component: not empty, no `/`, no leading `.`.
 pub(crate) fn is_plain_file_name(name: &str) -> bool {
     !name.is_empty() && !name.starts_with('.') && !name.contains(['/', '\0'])

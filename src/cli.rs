@@ -72,6 +72,12 @@ pub enum Command {
         #[arg(long)]
         force: bool,
     },
+    /// Delete the download cache and the logs of builds from source
+    Prune {
+        /// List what would be deleted, and delete nothing
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// List installed toolchains, marking the active one and the global default
     List {
         /// List installable versions instead of installed ones
@@ -184,6 +190,9 @@ pub fn run(cli: Cli) -> Result<()> {
         }
         Command::Remove { id, force } => {
             return commands::remove(&Context::from_process_env()?, &id, force);
+        }
+        Command::Prune { dry_run } => {
+            return commands::prune(&Context::from_process_env()?, dry_run);
         }
         Command::Use { id, gcc } => {
             return commands::use_(&Context::from_process_env()?, &id, gcc.as_deref());

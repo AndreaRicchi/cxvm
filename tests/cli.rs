@@ -11,6 +11,7 @@ use predicates::prelude::*;
 const COMMANDS: &[&str] = &[
     "install",
     "remove",
+    "prune",
     "list",
     "use",
     "global",

@@ -18,7 +18,7 @@ use crate::integrations::{self, Activation, FileEdit, Gitignore, Shell, presets,
 use crate::output::{self, debug};
 use crate::paths::Paths;
 use crate::project::{self, ProjectRc, Resolution, Source};
-use crate::store::{Installed, Link, Store};
+use crate::store::{self, Installed, Link, Store};
 use crate::toolchain::{self, Kind, Spec, ToolchainId};
 
 /// Everything a command reads from the process environment.
@@ -349,14 +349,17 @@ fn render_available(
     out
 }
 
-/// `1.8 GiB`, `950 MiB`: download sizes for humans.
+/// `1.8 GiB`, `950 MiB`, `12 KiB`: file sizes for humans, rounded up below a GiB.
 pub(crate) fn human_size(bytes: u64) -> String {
+    const KIB: u64 = 1 << 10;
     const MIB: u64 = 1 << 20;
     const GIB: u64 = 1 << 30;
     if bytes >= GIB {
         format!("{:.1} GiB", bytes as f64 / GIB as f64)
-    } else {
+    } else if bytes >= MIB {
         format!("{} MiB", bytes.div_ceil(MIB))
+    } else {
+        format!("{} KiB", bytes.div_ceil(KIB))
     }
 }
 
@@ -1116,11 +1119,12 @@ fn install_release(
     println!("Installed {} in {}", toolchain.id, toolchain.path.display());
     match log {
         None => println!(
-            "  the downloaded archive stays in {}; delete it to free space",
+            "  the downloaded archive stays in {}; `cxvm prune` deletes it",
             report.archive.display()
         ),
         Some(log) => println!(
-            "  the build log is {}; the downloaded sources stay in {}",
+            "  the build log is {}; the downloaded sources stay in {}; `cxvm prune` deletes \
+             both",
             log.display(),
             ctx.paths.downloads_dir().display()
         ),
@@ -1205,6 +1209,71 @@ pub fn remove(ctx: &Context, id: &str, force: bool) -> Result<()> {
             "{id} is still pinned here ({source}); reinstall it with `cxvm install`, or pin \
              another with `cxvm use <id>`"
         ));
+    }
+    Ok(())
+}
+
+/// The files `cxvm prune` deletes: everything in the download cache, `.part` files of
+/// interrupted downloads included, and the logs of builds from source; sorted, with sizes.
+fn cache_entries(paths: &Paths) -> Result<Vec<(PathBuf, u64)>> {
+    let mut entries = Vec::new();
+    for dir in [paths.downloads_dir(), paths.logs_dir()] {
+        let listing = match std::fs::read_dir(&dir) {
+            Ok(listing) => listing,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(source) => {
+                return Err(Error::Io {
+                    action: "read",
+                    path: dir,
+                    source,
+                    hint: "check the permissions of the cxvm cache",
+                });
+            }
+        };
+        let mut paths: Vec<PathBuf> = listing
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .collect();
+        paths.sort();
+        entries.extend(paths.into_iter().map(|path| {
+            let size = files::tree_size(&path);
+            (path, size)
+        }));
+    }
+    Ok(entries)
+}
+
+/// `cxvm prune`: delete the cached downloads and the build logs, or with `dry_run` only list
+/// them. Nothing there is needed once a toolchain is installed; a reinstall downloads again.
+pub fn prune(ctx: &Context, dry_run: bool) -> Result<()> {
+    // `install` holds the lock while it downloads, so this never deletes an archive in use.
+    let lock = if dry_run {
+        None
+    } else {
+        Some(ctx.store().lock()?)
+    };
+    let entries = cache_entries(&ctx.paths)?;
+    let cache = ctx.paths.cache_dir().display();
+    if entries.is_empty() {
+        println!("Nothing to prune: no downloads or build logs in {cache}");
+        return Ok(());
+    }
+    let total: u64 = entries.iter().map(|(_, size)| size).sum();
+    for (path, size) in &entries {
+        if !dry_run {
+            store::remove_all(path)?;
+        }
+        let verb = if dry_run { "Would delete" } else { "Deleted" };
+        println!("{verb} {} ({})", path.display(), human_size(*size));
+    }
+    drop(lock);
+    if dry_run {
+        println!(
+            "Would free {} in {cache}; run `cxvm prune` to delete these",
+            human_size(total)
+        );
+    } else {
+        println!("Freed {} in {cache}", human_size(total));
     }
     Ok(())
 }
@@ -1617,6 +1686,15 @@ mod tests {
         );
         let text = render_available(&[], &source_only, |_| false, "the catalog");
         assert!(text.contains(":\n\nNo prebuilt archive"), "{text}");
+    }
+
+    #[test]
+    fn sizes_are_rounded_up_to_the_unit() {
+        assert_eq!(human_size(0), "0 KiB");
+        assert_eq!(human_size(17), "1 KiB");
+        assert_eq!(human_size(MIB - 1), "1024 KiB");
+        assert_eq!(human_size(MIB + 1), "2 MiB");
+        assert_eq!(human_size(1638 * MIB), "1.6 GiB");
     }
 
     #[test]
