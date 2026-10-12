@@ -27,6 +27,15 @@ pub struct Installed {
     pub linked: bool,
 }
 
+/// An entry of `toolchains/`: a toolchain, or something cxvm ignores.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StoreEntry {
+    /// `toolchains/<kind>/<version>/`.
+    Toolchain(Installed),
+    /// Anything else, and why it is not a toolchain.
+    Stray { path: PathBuf, reason: &'static str },
+}
+
 /// A toolchain registered with `cxvm link`, as recorded in `links.toml`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Link {
@@ -72,11 +81,15 @@ impl Store {
 
     /// Every toolchain in the store and in `links.toml`, sorted by kind then version.
     ///
-    /// Store entries that are not directories or whose names are not exact versions are
-    /// skipped, and so is a link whose id a store entry already uses; `cxvm doctor` reports
-    /// them (M7).
+    /// The strays of [`Store::scan`] are skipped, and so is a link whose id a store entry
+    /// already uses; `cxvm doctor` reports both.
     pub fn installed(&self) -> Result<Vec<Installed>> {
-        let mut installed = self.store_entries()?;
+        let mut installed: Vec<Installed> = (self.scan()?.into_iter())
+            .filter_map(|entry| match entry {
+                StoreEntry::Toolchain(toolchain) => Some(toolchain),
+                StoreEntry::Stray { .. } => None,
+            })
+            .collect();
         for link in self.links()? {
             if installed.iter().any(|t| t.id == link.id) {
                 continue;
@@ -147,33 +160,88 @@ impl Store {
         files::write_atomic(&path, &format!("{LINKS_HEADER}{body}"))
     }
 
-    /// Toolchains in `toolchains/<kind>/<version>/`.
-    fn store_entries(&self) -> Result<Vec<Installed>> {
-        let mut installed = Vec::new();
-        for kind in Kind::ALL {
-            let kind_dir = self.paths.toolchains_dir().join(kind.as_str());
-            for entry in read_dir(&kind_dir)? {
+    /// Everything in `toolchains/`: the toolchains in `<kind>/<version>/`, and the strays,
+    /// sorted by path.
+    pub fn scan(&self) -> Result<Vec<StoreEntry>> {
+        let mut entries = Vec::new();
+        let mut top = read_dir(&self.paths.toolchains_dir())?;
+        top.sort_by_key(|entry| entry.file_name());
+        for entry in top {
+            let path = entry.path();
+            let kind = entry
+                .file_name()
+                .to_str()
+                .and_then(|n| n.parse::<Kind>().ok());
+            let Some(kind) = kind.filter(|_| path.is_dir()) else {
+                entries.push(StoreEntry::Stray {
+                    path,
+                    reason: "it is not a directory named after a compiler (gcc, clang)",
+                });
+                continue;
+            };
+            let mut versions = read_dir(&path)?;
+            versions.sort_by_key(|entry| entry.file_name());
+            for entry in versions {
                 let path = entry.path();
                 let id = entry
                     .file_name()
                     .to_str()
                     .and_then(|name| name.parse::<Version>().ok())
                     .and_then(|version| ToolchainId::new(kind, version));
-                if let Some(id) = id
-                    && path.is_dir()
-                {
-                    let (cc, cxx) = detect::compilers(&path, kind);
-                    installed.push(Installed {
-                        id,
+                entries.push(match id {
+                    Some(_) if !path.is_dir() => StoreEntry::Stray {
                         path,
-                        cc,
-                        cxx,
-                        linked: false,
-                    });
-                }
+                        reason: "it is not a directory",
+                    },
+                    Some(id) => {
+                        let (cc, cxx) = detect::compilers(&path, kind);
+                        StoreEntry::Toolchain(Installed {
+                            id,
+                            path,
+                            cc,
+                            cxx,
+                            linked: false,
+                        })
+                    }
+                    None => StoreEntry::Stray {
+                        path,
+                        reason: "its name is not an exact version such as 13.3.0",
+                    },
+                });
             }
         }
-        Ok(installed)
+        Ok(entries)
+    }
+
+    /// What `staging/` holds: installs and removals in progress, or left by interrupted ones.
+    pub fn staged(&self) -> Result<Vec<PathBuf>> {
+        let mut paths: Vec<PathBuf> = (read_dir(&self.paths.staging_dir())?.iter())
+            .map(fs::DirEntry::path)
+            .collect();
+        paths.sort();
+        Ok(paths)
+    }
+
+    /// Whether a cxvm process holds the store lock now. Unlike [`Store::lock`], this neither
+    /// waits nor touches `staging/`, and creates nothing.
+    pub fn lock_is_held(&self) -> Result<bool> {
+        let path = self.paths.lock_file();
+        let io_error = |source| Error::Io {
+            action: "read",
+            path: path.clone(),
+            source,
+            hint: "check the permissions of the cxvm store",
+        };
+        let file = match fs::File::open(&path) {
+            Ok(file) => file,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(err) => return Err(io_error(err)),
+        };
+        match file.try_lock() {
+            Ok(()) => Ok(false),
+            Err(fs::TryLockError::WouldBlock) => Ok(true),
+            Err(fs::TryLockError::Error(err)) => Err(io_error(err)),
+        }
     }
 
     /// Takes the store lock, waiting (with a message) while another cxvm process holds it,
@@ -217,9 +285,7 @@ impl Store {
 
     /// Deletes everything in `staging/`. Only safe under the lock: nothing else is in flight.
     fn clean_staging(&self, _lock: &StoreLock) -> Result<()> {
-        let staging = self.paths.staging_dir();
-        for entry in read_dir(&staging)? {
-            let path = entry.path();
+        for path in self.staged()? {
             output::note(format!(
                 "deleting {}, left by an interrupted install or removal",
                 path.display()
@@ -597,6 +663,53 @@ mod tests {
         fs::write(s.paths().toolchains_dir().join("gcc/14.2.0"), "").unwrap();
         fs::write(s.paths().toolchains_dir().join("clang"), "").unwrap();
         assert_eq!(ids(&s.installed().unwrap()), ["gcc@13.3.0"]);
+
+        let strays: Vec<(String, &str)> = (s.scan().unwrap().into_iter())
+            .filter_map(|entry| match entry {
+                StoreEntry::Stray { path, reason } => {
+                    let rel = path.strip_prefix(s.paths().toolchains_dir()).unwrap();
+                    Some((rel.display().to_string(), reason))
+                }
+                StoreEntry::Toolchain(_) => None,
+            })
+            .collect();
+        let names: Vec<&str> = strays.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "clang",
+                "gcc/.13.3.1.tmp",
+                "gcc/13",
+                "gcc/14.2.0",
+                "gcc/latest",
+                "msvc"
+            ]
+        );
+        assert!(strays[0].1.contains("named after a compiler"), "{strays:?}");
+        assert!(strays[2].1.contains("exact version"), "{strays:?}");
+        assert!(strays[3].1.contains("not a directory"), "{strays:?}");
+    }
+
+    #[test]
+    fn lock_is_held_while_a_lock_exists_and_creates_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = store(dir.path());
+        assert!(!s.lock_is_held().unwrap());
+        assert!(!s.paths().data_dir().exists());
+        let lock = s.lock().unwrap();
+        assert!(s.lock_is_held().unwrap());
+        drop(lock);
+        assert!(!s.lock_is_held().unwrap());
+    }
+
+    #[test]
+    fn staged_lists_what_staging_holds() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = store(dir.path());
+        assert!(s.staged().unwrap().is_empty());
+        let leftover = s.paths().staging_dir().join("gcc-13.3.0.99");
+        fs::create_dir_all(&leftover).unwrap();
+        assert_eq!(s.staged().unwrap(), [leftover]);
     }
 
     #[test]
