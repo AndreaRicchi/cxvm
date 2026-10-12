@@ -6,6 +6,8 @@ All notable changes to cxvm are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-12
+
 The first release.
 
 ### Added
@@ -54,4 +56,5 @@ The first release.
   needs `--configure-arg=--disable-libsanitizer` with glibc 2.42. See
   [docs/backends.md](https://github.com/AndreaRicchi/cxvm/blob/main/docs/backends.md).
 
-[Unreleased]: https://github.com/AndreaRicchi/cxvm/commits/main
+[Unreleased]: https://github.com/AndreaRicchi/cxvm/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/AndreaRicchi/cxvm/releases/tag/v0.1.0

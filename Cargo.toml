@@ -1,6 +1,6 @@
 [package]
 name = "cxvm"
-version = "0.1.0-dev"
+version = "0.1.0"
 edition = "2024"
 rust-version = "1.89"
 description = "Per-project C/C++ compiler versions for x86_64 Linux"
