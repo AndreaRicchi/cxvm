@@ -12,8 +12,10 @@ prebuilt releases work: official LLVM builds of Clang (`cxvm install clang@19`) 
 of GCC (`cxvm install gcc@13`). GCC releases without a prebuilt archive are built from source
 (`cxvm install gcc@10 --from-source`). Clang can be paired with the libstdc++ of a chosen GCC
 (`cxvm use clang@17 --gcc gcc@13`), and CMake presets and VS Code settings follow the pin when
-a project asks for them: see [docs/integrations.md](docs/integrations.md). `cxvm doctor` comes
-next. The specification and milestone plan live in [PLAN.md](PLAN.md).
+a project asks for them: see [docs/integrations.md](docs/integrations.md). `cxvm doctor` checks
+the store, the pin, the generated files and the CMake build directories of a project, and
+`cxvm prune` empties the download cache. The first release comes next. The specification and
+milestone plan live in [PLAN.md](PLAN.md).
 
 ## Building
 
