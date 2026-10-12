@@ -1,5 +1,5 @@
-//! Generated project files: `toolchain.cmake`, `env`, `.gitignore` entry (M2), the pairing of
-//! clang with a GCC, `CMakeUserPresets.json` and VS Code settings (M6).
+//! Generated project files: `toolchain.cmake`, `env`, `.gitignore` entry, the pairing of clang
+//! with a GCC, `CMakeUserPresets.json` and VS Code settings.
 
 mod json;
 pub mod presets;
@@ -19,7 +19,8 @@ use crate::store::Installed;
 use crate::toolchain::{self, Kind};
 
 /// Everything the generated files and `env`/`exec` need to activate a toolchain. All paths are
-/// real, absolute paths, never `.cxvm/current` (PLAN.md §4).
+/// real, absolute paths, never `.cxvm/current`, so a build dir keeps the compiler it was
+/// configured with.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Activation {
     /// `gcc@13.3.0`, or `system`.
@@ -225,7 +226,7 @@ pub enum Shell {
     Fish,
 }
 
-/// The CMake toolchain file from PLAN.md §4.
+/// The CMake toolchain file.
 pub fn render_toolchain_cmake(activation: &Activation) -> String {
     let label = &activation.label;
     let mut out = format!(

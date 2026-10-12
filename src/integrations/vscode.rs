@@ -1,4 +1,4 @@
-//! `.vscode/settings.json`: clangd and CMake Tools settings that follow the pin (opt-in, M6).
+//! `.vscode/settings.json`: clangd and CMake Tools settings that follow the pin (opt-in).
 
 use std::path::Path;
 

@@ -1,5 +1,5 @@
 //! `cxvm doctor`: checks the store, the active toolchain, the current project and the cache,
-//! and says what to do about each problem it finds (M7).
+//! and says what to do about each problem it finds.
 //!
 //! It only reads: it takes no lock and writes nothing. A file it cannot parse is one more
 //! finding, never the end of the report.

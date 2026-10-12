@@ -1,6 +1,6 @@
 //! Command-line surface: argument parsing with clap and dispatch to the library.
 //!
-//! The command set mirrors PLAN.md §5.
+//! The command set mirrors the README's command table.
 
 use std::io;
 use std::path::PathBuf;
@@ -27,7 +27,7 @@ pub struct Cli {
     pub command: Command,
 }
 
-/// One entry per row of the PLAN.md §5 table.
+/// One entry per row of the README's command table.
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Install a toolchain; with no id, install what `.cxvmrc` needs and regenerate `.cxvm/`

@@ -1,5 +1,5 @@
 //! Toolchain identity: ids (`gcc@13.3.0`, `clang@18`, `system`, `-local` suffix), version
-//! parsing and matching, and per-toolchain `.cxvm-meta.toml` (M1, M2).
+//! parsing and matching, and per-toolchain `.cxvm-meta.toml`.
 //!
 //! A [`Spec`] is what the user typed and may be partial (`gcc@13`); a [`ToolchainId`] is always
 //! exact (`gcc@13.3.0`) and names one toolchain in the store.

@@ -218,7 +218,9 @@ and the `.cxvm/` directories of your projects.
 - [docs/backends.md](docs/backends.md): where toolchains come from, how they are verified, and
   what was found on real hosts.
 - [CHANGELOG.md](CHANGELOG.md).
-- [PLAN.md](PLAN.md): the specification, the milestones and the decisions log.
+- [CONTRIBUTING.md](CONTRIBUTING.md): how to build, test and change cxvm.
+- [PLAN.md at v0.1.0](https://github.com/AndreaRicchi/cxvm/blob/v0.1.0/PLAN.md): the plan and
+  decisions log that 0.1.0 was built from.
 
 ## Building from source
 

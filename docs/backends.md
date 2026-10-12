@@ -1,9 +1,9 @@
 # Backends: where toolchains come from
 
-Findings about upstream release assets, checked against the real release pages (PLAN.md §3,
-principle 6). Update this file when upstream changes.
+Findings about upstream release assets, checked against the real release pages. Update this
+file when upstream changes.
 
-## Clang: official LLVM releases (M3)
+## Clang: official LLVM releases
 
 Source: GitHub releases of [`llvm/llvm-project`](https://github.com/llvm/llvm-project/releases),
 tags `llvmorg-<version>`. Data below was read from the GitHub releases API on 2026-10-03.
@@ -78,7 +78,7 @@ when the newest one is too new for an old clang: on Ubuntu 26.04, clang 17.0.6 f
 `--gcc-install-dir=/usr/lib/gcc/x86_64-linux-gnu/15`. `[clang] gcc` in `.cxvmrc` pairs clang
 with a chosen GCC; see "Pairing clang with a GCC" below.
 
-### Pairing clang with a GCC (M6)
+### Pairing clang with a GCC
 
 Two driver options select the GCC whose headers, libstdc++ and crt files clang uses. Tried on
 Ubuntu 26.04 (2026-10-05) with the catalog's clang 15.0.6, 16.0.4 and 17.0.6 and the distro's
@@ -132,7 +132,7 @@ has an x86_64 Linux asset: 18.1.8, 17.0.6, 16.0.4, 15.0.6, 14.0.6, 13.0.1, 12.0.
 Older patch releases can be added with the xtask's `--hash-missing` allowlist; each one costs a
 full download to hash.
 
-## GCC: xPack prebuilt archives (M4)
+## GCC: xPack prebuilt archives
 
 Source: GitHub releases of
 [`xpack-dev-tools/gcc-xpack`](https://github.com/xpack-dev-tools/gcc-xpack/releases), tags
@@ -144,7 +144,7 @@ read from the GitHub releases API on 2026-10-03; archives were unpacked and run 
 
 26 releases, 17 GCC versions: 8.5.0, 11.2.0–11.5.0, 12.1.0–12.5.0, 13.2.0–13.4.0,
 14.1.0–14.3.0 and 15.2.0. There is nothing for GCC 9, 10, 7 and older, and nothing for GCC 16
-yet (newest release: 2025-10-14). Those need `cxvm install --from-source` (M5) or `cxvm link`.
+yet (newest release: 2025-10-14). Those need `cxvm install --from-source` or `cxvm link`.
 
 The catalog holds every GCC version, from the highest xPack build of each. The build number is
 visible in the asset name and URL only: the id stays `gcc@13.3.0`.
@@ -240,7 +240,7 @@ Checked where it matters, on a host older than the toolchain: in an `ubuntu:24.0
 Without the flag it stops with ``version `GLIBCXX_3.4.34' not found``. `LD_LIBRARY_PATH` was
 unset in both runs.
 
-## GCC: GNU source releases (M5)
+## GCC: GNU source releases
 
 Source: GNU's release tarballs. Read on 2026-10-05; the builds below ran on Ubuntu 26.04 (glibc
 2.43, binutils 2.46, system GCC 15.2.0, 22 CPUs).
@@ -423,12 +423,12 @@ Which releases still use `struct termio`, read from the sources of the ones name
 16.2.0. So on a host with glibc 2.42 or later, expect to need the argument for everything
 before 13.5.0, for 14.1.0 to 14.3.0 and for 15.1.0.
 
-## Catalog updates (M7)
+## Catalog updates
 
 The catalogs are embedded in the binary, so a release of LLVM, xPack or GNU that came out after
-a cxvm release is not installable until the next one. PLAN.md asked for `cxvm catalog update`,
-fetching a newer catalog from the project repository, "or document why it isn't worth it yet".
-It is not built, for these reasons:
+a cxvm release is not installable until the next one. A `cxvm catalog update` command,
+fetching a newer catalog from the project repository, was considered and not built, for these
+reasons:
 
 - **A second trust root.** The catalog's sha256s decide which binaries cxvm unpacks and runs.
   Today they come with the cxvm binary, from a tagged release. A catalog fetched later would
@@ -437,10 +437,10 @@ It is not built, for these reasons:
   signature, and so a signing key to keep and a verifying dependency.
 - **No format version.** The catalog files reject unknown keys (`deny_unknown_fields`), so a
   newer catalog that records anything new would break every older binary that fetched it.
-- **Little gain.** New catalogs come with new cxvm releases, which the release workflow (M8)
-  makes cheap. Until then, `CXVM_CATALOG=<file>` uses any catalog file instead of the
-  embedded one, e.g. one regenerated from a checkout with `cargo xtask catalog`, which checks
-  provenance as described above.
+- **Little gain.** New catalogs come with new cxvm releases, which the release workflow makes
+  cheap. Until then, `CXVM_CATALOG=<file>` uses any catalog file instead of the embedded one,
+  e.g. one regenerated from a checkout with `cargo xtask catalog`, which checks provenance as
+  described above.
 
 What would make it worth building: a `format` field in the catalog that old binaries can
 check, and catalogs signed by a release key whose public half is embedded in cxvm.

@@ -1,4 +1,4 @@
-//! The shared toolchain store: installed toolchains, links, staging and locking (M1, M3).
+//! The shared toolchain store: installed toolchains, links, staging and locking.
 
 use std::fs;
 use std::io;

@@ -1,4 +1,4 @@
-//! Store, cache and lock locations from `CXVM_HOME` and the XDG variables (M1).
+//! Store, cache and lock locations from `CXVM_HOME` and the XDG variables.
 //!
 //! Environment lookups go through a closure so tests never modify the process environment.
 

@@ -1,4 +1,4 @@
-//! Building GCC from a GNU source release (M5): `cxvm install <id> --from-source`.
+//! Building GCC from a GNU source release: `cxvm install <id> --from-source`.
 //!
 //! The verified tarball is unpacked in `staging/`, the GMP, MPFR, MPC and ISL tarballs that its
 //! own `contrib/download_prerequisites` names are added to the tree, and GCC is configured for

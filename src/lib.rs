@@ -1,7 +1,7 @@
 //! cxvm: per-project C/C++ compiler versions for x86_64 Linux.
 //!
 //! This crate holds all of the logic; `src/main.rs` only parses arguments and maps errors to an
-//! exit code. See `PLAN.md` for the specification and milestone plan.
+//! exit code.
 
 pub mod backends;
 pub mod catalog;

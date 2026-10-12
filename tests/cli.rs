@@ -1,5 +1,5 @@
-//! End-to-end checks of the CLI surface: every §5 command exists and has help text, and
-//! messages follow `-v` and the colour settings.
+//! End-to-end checks of the CLI surface: every command exists and has help text, and messages
+//! follow `-v` and the colour settings.
 
 mod common;
 
@@ -7,7 +7,7 @@ use assert_cmd::Command;
 use common::Sandbox;
 use predicates::prelude::*;
 
-/// Every command from PLAN.md §5, in table order.
+/// Every command, in the order of the README's command table.
 const COMMANDS: &[&str] = &[
     "install",
     "remove",

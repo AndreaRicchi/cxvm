@@ -1,4 +1,4 @@
-//! `CMakeUserPresets.json`: a configure preset per pinned toolchain (opt-in, M6).
+//! `CMakeUserPresets.json`: a configure preset per pinned toolchain (opt-in).
 
 use std::path::Path;
 

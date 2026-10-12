@@ -1,6 +1,6 @@
 //! Probing a toolchain prefix: which compiler it holds, its exact version, and where its C++
 //! runtime library and GCC install dir live. Used by `cxvm link`, when generating project files
-//! (M2) and when installing (M3, M4).
+//! and when installing.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

@@ -1,5 +1,5 @@
 //! Per-project state: `.cxvmrc` discovery and parsing, the `.cxvm/` folder, and the
-//! resolution order env var, nearest `.cxvmrc`, global default, `system` (M1, M2).
+//! resolution order env var, nearest `.cxvmrc`, global default, `system`.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -251,10 +251,10 @@ pub struct Resolution {
     pub source: Source,
 }
 
-/// Applies the resolution order from PLAN.md §4: `env_compiler` (the value of
-/// `CXVM_COMPILER`, empty meaning unset), the nearest `.cxvmrc` from `cwd`, the global default
-/// in `config_path`, then `system`. The first source that is set wins, even if it names a
-/// toolchain that is not installed.
+/// Applies the resolution order: `env_compiler` (the value of `CXVM_COMPILER`, empty meaning
+/// unset), the nearest `.cxvmrc` from `cwd`, the global default in `config_path`, then
+/// `system`. The first source that is set wins, even if it names a toolchain that is not
+/// installed.
 pub fn resolve(cwd: &Path, env_compiler: Option<&str>, config_path: &Path) -> Result<Resolution> {
     if let Some(value) = env_compiler.filter(|value| !value.is_empty()) {
         let spec = value.parse().map_err(|err| match err {
