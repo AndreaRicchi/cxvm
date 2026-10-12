@@ -153,6 +153,14 @@ pub fn gcc_install_dir(cc: &Path) -> Option<PathBuf> {
     path.canonicalize().ok()?.parent().map(Path::to_path_buf)
 }
 
+/// The program `driver` runs as `name`, e.g. GCC's `cc1plus`, from `-print-prog-name=`;
+/// `None` unless that names a file that exists.
+pub fn prog_name(driver: &Path, name: &str) -> Option<PathBuf> {
+    let output = capture(driver, &format!("-print-prog-name={name}"))?;
+    let path = PathBuf::from(output.trim());
+    (path.is_absolute() && path.is_file()).then_some(path)
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -217,6 +225,9 @@ mod tests {
                  -print-libgcc-file-name) \
                  d=\"${{0%/*}}/../lib/gcc/x86_64-pc-linux-gnu/{version}\"; \
                  if [ -e \"$d/libgcc.a\" ]; then echo \"$d/libgcc.a\"; else echo libgcc.a; fi ;;\n\
+                 -print-prog-name=*) p=\"${{1#-print-prog-name=}}\"; \
+                 d=\"${{0%/*}}/../libexec/gcc/x86_64-pc-linux-gnu/{version}\"; \
+                 if [ -e \"$d/$p\" ]; then echo \"$d/$p\"; else echo \"$p\"; fi ;;\n\
                  esac\n",
                 major = version.split('.').next().unwrap()
             ),
@@ -348,5 +359,25 @@ mod tests {
             Some(install_dir.canonicalize().unwrap())
         );
         assert_eq!(gcc_install_dir(&dir.path().join("bin/missing")), None);
+    }
+
+    #[test]
+    fn finds_the_programs_the_driver_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        fake(dir.path(), "g++", Kind::Gcc, "13.3.0");
+        let cxx = dir.path().join("bin/g++");
+        assert_eq!(
+            prog_name(&cxx, "cc1plus"),
+            None,
+            "driver prints the bare name"
+        );
+        let libexec = dir.path().join("libexec/gcc/x86_64-pc-linux-gnu/13.3.0");
+        fs::create_dir_all(&libexec).unwrap();
+        fs::write(libexec.join("cc1plus"), "").unwrap();
+        let found = prog_name(&cxx, "cc1plus").unwrap();
+        assert_eq!(
+            found.canonicalize().unwrap(),
+            libexec.join("cc1plus").canonicalize().unwrap()
+        );
     }
 }

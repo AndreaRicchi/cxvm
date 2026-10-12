@@ -6,17 +6,6 @@ use std::path::PathBuf;
 /// Errors surfaced to the user by `cxvm` commands.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    /// A command whose milestone has not been reached yet.
-    #[error(
-        "`cxvm {command}` is not implemented yet: it is planned for milestone {milestone} (see PLAN.md)"
-    )]
-    NotImplemented {
-        /// Subcommand name as typed by the user.
-        command: &'static str,
-        /// Milestone from PLAN.md §8 that implements it.
-        milestone: &'static str,
-    },
-
     /// A string that is not a valid toolchain id.
     #[error(
         "invalid toolchain id `{input}`: {reason}\n  \
@@ -123,6 +112,16 @@ pub enum Error {
     Cancelled {
         /// What was running, e.g. `the build of gcc@10.5.0`.
         what: String,
+    },
+
+    /// `cxvm doctor` found errors, which it has printed with their hints.
+    #[error(
+        "cxvm doctor found {summary}\n  \
+         hint: the hint under each error says what to do; run `cxvm doctor` again afterwards"
+    )]
+    Diagnosed {
+        /// What it found, e.g. `2 errors and 1 warning`.
+        summary: String,
     },
 
     /// A cxvm file (`config.toml`, `.cxvmrc`) has invalid content.

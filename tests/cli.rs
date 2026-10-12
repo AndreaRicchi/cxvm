@@ -1,5 +1,5 @@
-//! End-to-end checks of the CLI surface: every §5 command exists, has help text, and the
-//! stubs fail loudly instead of pretending to succeed.
+//! End-to-end checks of the CLI surface: every §5 command exists and has help text, and
+//! messages follow `-v` and the colour settings.
 
 mod common;
 
@@ -59,23 +59,6 @@ fn version_flag_works() {
         .assert()
         .success()
         .stdout(predicate::str::starts_with("cxvm "));
-}
-
-#[test]
-fn stubs_fail_with_not_implemented() {
-    let invocations: &[&[&str]] = &[&["doctor"]];
-    // In a sandbox: a stub that becomes a real command must never touch the real store.
-    let sandbox = Sandbox::new();
-    for args in invocations {
-        sandbox
-            .cxvm("")
-            .args(*args)
-            .assert()
-            .code(1)
-            .stdout(predicate::str::is_empty())
-            .stderr(predicate::str::contains("not implemented yet"))
-            .stderr(predicate::str::contains(args[0]));
-    }
 }
 
 #[test]

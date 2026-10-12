@@ -27,11 +27,10 @@ fn parse_ldd(output: &str) -> Vec<String> {
         .collect()
 }
 
-/// What to install for the missing `libraries`.
-pub fn missing_libraries_hint(libraries: &[String]) -> String {
+/// What to install for the missing `libraries`, and `then` what to do.
+pub fn missing_libraries_hint(libraries: &[String], then: &str) -> String {
     let mut hint = format!(
-        "install the packages that provide {} and run the same command again; the archive \
-         stays in the download cache",
+        "install the packages that provide {}, then {then}",
         libraries.join(", ")
     );
     if libraries
@@ -147,12 +146,12 @@ mod tests {
 
     #[test]
     fn libtinfo_hint_names_the_packages() {
-        let hint = missing_libraries_hint(&["libtinfo.so.5".into()]);
+        let hint = missing_libraries_hint(&["libtinfo.so.5".into()], "retry");
         assert!(
             hint.contains("libtinfo5") && hint.contains("ncurses-compat-libs"),
             "{hint}"
         );
-        let hint = missing_libraries_hint(&["libxml2.so.2".into()]);
+        let hint = missing_libraries_hint(&["libxml2.so.2".into()], "retry");
         assert!(
             hint.contains("libxml2.so.2") && !hint.contains("libtinfo5"),
             "{hint}"

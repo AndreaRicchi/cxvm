@@ -121,7 +121,7 @@ impl Pairing {
 }
 
 /// Fails if one of the toolchain's drivers is missing.
-fn check_drivers(toolchain: &Installed) -> Result<()> {
+pub(crate) fn check_drivers(toolchain: &Installed) -> Result<()> {
     let Installed {
         id, path, cc, cxx, ..
     } = toolchain;

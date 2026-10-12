@@ -70,6 +70,39 @@ impl Sandbox {
         prefix
     }
 
+    /// Like [`Sandbox::install`], with the `.cxvm-meta.toml` cxvm writes when it installs.
+    pub fn install_with_meta(&self, kind: &str, version: &str) -> PathBuf {
+        let prefix = self.install(kind, version);
+        let (cc, cxx) = match kind {
+            "gcc" => ("gcc", "g++"),
+            _ => ("clang", "clang++"),
+        };
+        let bin = prefix.join("bin");
+        fs::write(
+            prefix.join(".cxvm-meta.toml"),
+            format!(
+                "id = \"{kind}@{version}\"\nbackend = \"test\"\n\
+                 url = \"https://example.invalid/{kind}-{version}.tar.xz\"\n\
+                 sha256 = \"{}\"\ninstalled = \"2026-10-12T08:00:00Z\"\n\
+                 cc = \"{}\"\ncxx = \"{}\"\nversion = \"{cc} (Fake) {version}\"\n",
+                "0".repeat(64),
+                bin.join(cc).display(),
+                bin.join(cxx).display()
+            ),
+        )
+        .unwrap();
+        prefix
+    }
+
+    /// Puts an `ldd` on the sandbox's `PATH` that prints `output` (no `'`) whatever it is
+    /// asked.
+    pub fn fake_ldd(&self, output: &str) -> PathBuf {
+        let path = self.bin().join("ldd");
+        fs::write(&path, format!("#!/bin/sh\nprintf '%s\\n' '{output}'\n")).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
     /// Writes `proj/<rel>/.cxvmrc`.
     pub fn pin(&self, rel: &str, compiler: &str) -> PathBuf {
         let path = self.project().join(rel).join(".cxvmrc");

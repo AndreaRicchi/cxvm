@@ -160,7 +160,10 @@ pub fn install(
                     "its compiler cannot run on this system: missing shared libraries {}",
                     missing.join(", ")
                 ),
-                smoke::missing_libraries_hint(&missing),
+                smoke::missing_libraries_hint(
+                    &missing,
+                    "run the same command again; the archive stays in the download cache",
+                ),
             ));
         }
         let detected = detect::probe(&staged, id.kind()).map_err(|err| {

@@ -483,7 +483,7 @@ pub fn current(ctx: &Context, json: bool) -> Result<()> {
 
 /// The error for a toolchain spec with no match in the store, with the next step to take.
 /// `context` follows "is not installed", e.g. ` (set by /p/.cxvmrc)`.
-fn not_installed_error(store: &Store, spec: &Spec, context: String) -> Result<Error> {
+pub(crate) fn not_installed_error(store: &Store, spec: &Spec, context: String) -> Result<Error> {
     let mut hint = match spec {
         Spec::Toolchain { kind, version } if version.suffix().is_some() => format!(
             "register it with `cxvm link <prefix> --as {kind}@<x.y.z>-{}`",
@@ -1215,7 +1215,7 @@ pub fn remove(ctx: &Context, id: &str, force: bool) -> Result<()> {
 
 /// The files `cxvm prune` deletes: everything in the download cache, `.part` files of
 /// interrupted downloads included, and the logs of builds from source; sorted, with sizes.
-fn cache_entries(paths: &Paths) -> Result<Vec<(PathBuf, u64)>> {
+pub(crate) fn cache_entries(paths: &Paths) -> Result<Vec<(PathBuf, u64)>> {
     let mut entries = Vec::new();
     for dir in [paths.downloads_dir(), paths.logs_dir()] {
         let listing = match std::fs::read_dir(&dir) {
@@ -1352,7 +1352,7 @@ pub fn link(ctx: &Context, prefix: &Path, as_id: Option<&str>) -> Result<()> {
 }
 
 /// The numeric part of an exact id's version, e.g. `11.4.0` for `gcc@11.4.0-local`.
-fn numbers(id: &ToolchainId) -> String {
+pub(crate) fn numbers(id: &ToolchainId) -> String {
     let version = id.version().to_string();
     match id.version().suffix() {
         Some(suffix) => version[..version.len() - suffix.len() - 1].to_owned(),

@@ -1,7 +1,6 @@
 //! Command-line surface: argument parsing with clap and dispatch to the library.
 //!
-//! The command set mirrors PLAN.md §5. Until a milestone implements a command, it returns
-//! [`Error::NotImplemented`] so that scripts never mistake a stub for success.
+//! The command set mirrors PLAN.md §5.
 
 use std::io;
 use std::path::PathBuf;
@@ -11,7 +10,8 @@ use clap_complete::Shell;
 
 use crate::backends::source;
 use crate::commands::{self, Context};
-use crate::error::{Error, Result};
+use crate::doctor;
+use crate::error::Result;
 use crate::integrations;
 use crate::output;
 
@@ -157,17 +157,18 @@ pub enum EnvShell {
 /// Run the parsed command line.
 pub fn run(cli: Cli) -> Result<()> {
     output::set_verbose(cli.verbose);
-    let (command, milestone) = match cli.command {
+    let ctx = Context::from_process_env;
+    match cli.command {
         Command::Completions { shell } => {
             clap_complete::generate(shell, &mut Cli::command(), "cxvm", &mut io::stdout());
-            return Ok(());
+            Ok(())
         }
         Command::List {
             available: true,
             json,
-        } => return commands::list_available(&Context::from_process_env()?, json),
-        Command::List { json, .. } => return commands::list(&Context::from_process_env()?, json),
-        Command::Current { json } => return commands::current(&Context::from_process_env()?, json),
+        } => commands::list_available(&ctx()?, json),
+        Command::List { json, .. } => commands::list(&ctx()?, json),
+        Command::Current { json } => commands::current(&ctx()?, json),
         Command::Install {
             id,
             from_source,
@@ -182,37 +183,27 @@ pub fn run(cli: Cli) -> Result<()> {
                 host_compiler,
                 configure_args,
             });
-            let ctx = Context::from_process_env()?;
-            return match id {
-                Some(id) => commands::install(&ctx, &id, build.as_ref()),
-                None => commands::install_pinned(&ctx, build.as_ref()),
-            };
+            match id {
+                Some(id) => commands::install(&ctx()?, &id, build.as_ref()),
+                None => commands::install_pinned(&ctx()?, build.as_ref()),
+            }
         }
-        Command::Remove { id, force } => {
-            return commands::remove(&Context::from_process_env()?, &id, force);
-        }
-        Command::Prune { dry_run } => {
-            return commands::prune(&Context::from_process_env()?, dry_run);
-        }
-        Command::Use { id, gcc } => {
-            return commands::use_(&Context::from_process_env()?, &id, gcc.as_deref());
-        }
-        Command::Global { id } => return commands::global(&Context::from_process_env()?, &id),
-        Command::Exec { cmd } => return commands::exec(&Context::from_process_env()?, &cmd),
+        Command::Remove { id, force } => commands::remove(&ctx()?, &id, force),
+        Command::Prune { dry_run } => commands::prune(&ctx()?, dry_run),
+        Command::Use { id, gcc } => commands::use_(&ctx()?, &id, gcc.as_deref()),
+        Command::Global { id } => commands::global(&ctx()?, &id),
+        Command::Exec { cmd } => commands::exec(&ctx()?, &cmd),
         Command::Env { shell } => {
             let shell = shell.map(|shell| match shell {
                 EnvShell::Bash | EnvShell::Zsh => integrations::Shell::Posix,
                 EnvShell::Fish => integrations::Shell::Fish,
             });
-            return commands::env(&Context::from_process_env()?, shell);
+            commands::env(&ctx()?, shell)
         }
-        Command::Link { prefix, as_id } => {
-            return commands::link(&Context::from_process_env()?, &prefix, as_id.as_deref());
-        }
-        Command::Unlink { id } => return commands::unlink(&Context::from_process_env()?, &id),
-        Command::Doctor => ("doctor", "M7"),
-    };
-    Err(Error::NotImplemented { command, milestone })
+        Command::Link { prefix, as_id } => commands::link(&ctx()?, &prefix, as_id.as_deref()),
+        Command::Unlink { id } => commands::unlink(&ctx()?, &id),
+        Command::Doctor => doctor::run(&ctx()?),
+    }
 }
 
 #[cfg(test)]
