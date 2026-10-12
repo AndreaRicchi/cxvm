@@ -55,8 +55,9 @@ jobs:
           file "$bin" | grep -q 'static' || { echo "::error::cxvm is not statically linked"; exit 1; }
           "$bin" --version
           "$bin" --help
-      # The archive name has no version, so that install.sh can always fetch
-      # releases/latest/download/cxvm-x86_64-unknown-linux-musl.tar.gz.
+      # The archive name has no version, so that
+      # releases/latest/download/cxvm-x86_64-unknown-linux-musl.tar.gz always
+      # names the newest release.
       - name: Package the binary
         run: |
           name="cxvm-$TARGET"

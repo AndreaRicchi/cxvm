@@ -34,28 +34,23 @@ which one it uses.
 
 ## Install
 
+With Rust 1.89 or newer and a C compiler (two dependencies build C code):
+
 ```sh
-curl -fsSL https://github.com/AndreaRicchi/cxvm/releases/latest/download/install.sh | sh
+cargo install cxvm --locked
 ```
 
-The script downloads the static binary of the latest release, checks its sha256, and puts
-`cxvm` in `~/.local/bin` (or `$XDG_BIN_HOME`). It does not use sudo and does not edit your
-shell's startup files; it tells you if the directory is not on `PATH`. `sh -s -- --version
-v0.1.0 --bin-dir ~/bin` after the pipe chooses the release and the directory.
+This puts `cxvm` in `~/.cargo/bin`, which rustup adds to `PATH`. Run the same command again to
+update it.
 
-By hand, from the [releases page](https://github.com/AndreaRicchi/cxvm/releases):
+Without Rust, download the static binary from the
+[releases page](https://github.com/AndreaRicchi/cxvm/releases):
 
 ```sh
 sha256sum -c cxvm-x86_64-unknown-linux-musl.tar.gz.sha256
 gh attestation verify cxvm-x86_64-unknown-linux-musl.tar.gz --repo AndreaRicchi/cxvm   # optional, after 0.1.0
 tar -xzf cxvm-x86_64-unknown-linux-musl.tar.gz
 cp cxvm-x86_64-unknown-linux-musl/cxvm ~/.local/bin/
-```
-
-With Rust 1.89 or newer and a C compiler (two dependencies build C code):
-
-```sh
-cargo install cxvm --locked
 ```
 
 Shell completions: `cxvm completions bash|zsh|fish`, see
@@ -151,7 +146,7 @@ version, or `system`. `-v` makes any command explain what it does.
 - **[xPack](https://xpack-dev-tools.github.io) with `xpm`** installs xPack's GCC and Clang
   builds per project, from a `package.json`, and needs Node.js. cxvm uses the same GCC builds,
   takes Clang from LLVM's own releases, builds GCC versions that xPack does not have, and
-  generates CMake and editor files. It is a single static binary.
+  generates CMake and editor files. It is a single binary.
 - **[pixi](https://pixi.sh)** manages a whole conda-forge environment per project: compilers,
   libraries and tools, locked, on Linux, macOS and Windows. Its compilers come with their own
   sysroot and you work inside the environment. cxvm manages only compilers, builds against the
@@ -208,8 +203,8 @@ No. It writes only to its store, its cache, the current project and temporary di
 
 **What breaks if I uninstall cxvm?**
 Nothing that is already configured: generated files name the compilers in the store. To remove
-everything, delete the `cxvm` binary, `~/.local/share/cxvm` (or `$CXVM_HOME`), `~/.cache/cxvm`
-and the `.cxvm/` directories of your projects.
+everything, remove the `cxvm` binary (`cargo uninstall cxvm`), and delete `~/.local/share/cxvm`
+(or `$CXVM_HOME`), `~/.cache/cxvm` and the `.cxvm/` directories of your projects.
 
 ## Documentation
 

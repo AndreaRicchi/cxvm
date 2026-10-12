@@ -6,6 +6,12 @@ All notable changes to cxvm are listed here. The format follows
 
 ## [Unreleased]
 
+### Removed
+
+- `install.sh`. Install with `cargo install cxvm --locked`, or download the static binary from
+  the releases page. The 0.1.0 release keeps the script as an asset, but
+  `releases/latest/download/install.sh` stops working once the next release is out.
+
 ## [0.1.0] - 2026-10-12
 
 The first release.

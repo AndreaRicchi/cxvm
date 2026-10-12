@@ -66,4 +66,4 @@ jobs:
         run: |
           gh release create "$TAG" --draft --verify-tag \
             --title "cxvm ${TAG#v}" --notes-file notes.md \
-            "dist/$ARCHIVE" "dist/$ARCHIVE.sha256" install.sh
+            "dist/$ARCHIVE" "dist/$ARCHIVE.sha256"
