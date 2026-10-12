@@ -5,10 +5,12 @@ edition = "2024"
 rust-version = "1.89"
 description = "Per-project C/C++ compiler versions for x86_64 Linux"
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/AndreaRicchi/cxvm"
 readme = "README.md"
 keywords = ["gcc", "clang", "toolchain", "version-manager", "cmake"]
 categories = ["command-line-utilities", "development-tools"]
-publish = false
+# The catalog is embedded with include_str!, so it must be packaged.
+include = ["/src", "/catalog", "/tests", "/README.md", "/CHANGELOG.md", "/LICENSE-*"]
 
 [workspace]
 members = ["xtask"]
