@@ -290,3 +290,23 @@ fn unlink_rejects_ids_that_are_not_linked() {
             .stderr(predicate::str::contains("hint:"));
     }
 }
+
+#[test]
+fn an_id_that_cannot_be_checked_is_taken_on_trust_with_a_warning() {
+    let s = Sandbox::new();
+    let prefix = s.path("opt/odd");
+    s.fake_compiler(&prefix.join("bin"), "gcc");
+    s.fake_compiler(&prefix.join("bin"), "g++");
+    s.cxvm("")
+        .args(["link", prefix.to_str().unwrap(), "--as", "gcc@9.9.9-odd"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Linked gcc@9.9.9-odd"))
+        .stderr(predicate::str::contains(
+            "warning: cannot check `--as gcc@9.9.9-odd`, so its version is taken on trust: \
+             cannot tell the exact version of",
+        ))
+        .stderr(predicate::str::contains(
+            "\n  hint: if it is wrong, `cxvm unlink gcc@9.9.9-odd` and link it again",
+        ));
+}

@@ -1505,12 +1505,14 @@ fn probe_as(prefix: &Path, id: &ToolchainId) -> Result<Option<detect::Detected>>
             }
             Ok(Some(detected))
         }
-        Err(err) => {
+        Err(Error::Detect { reason, .. }) => {
             output::warning(format!(
-                "taking the version from `--as {id}` on trust: {err}"
+                "cannot check `--as {id}`, so its version is taken on trust: {reason}\n  \
+                 hint: if it is wrong, `cxvm unlink {id}` and link it again with the right id"
             ));
             Ok(None)
         }
+        Err(err) => Err(err),
     }
 }
 
@@ -1632,7 +1634,9 @@ pub fn exec(ctx: &Context, cmd: &[String]) -> Result<()> {
             std::iter::once(bin.clone()).chain(ctx.path_var.iter().flat_map(std::env::split_paths));
         let path = std::env::join_paths(dirs).map_err(|err| Error::Usage {
             message: format!("cannot add {} to PATH: {err}", bin.display()),
-            hint: "toolchain paths must not contain `:`".into(),
+            hint: "PATH cannot hold a directory with `:` in its name: install or link the \
+                   toolchain under a path without one"
+                .into(),
         })?;
         command.env("PATH", path);
     }

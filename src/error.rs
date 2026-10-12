@@ -146,3 +146,107 @@ impl Error {
 
 /// Shorthand for results carrying [`Error`].
 pub type Result<T, E = Error> = std::result::Result<T, E>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One value of every variant. The match in the test below has no catch-all, so a new
+    /// variant does not compile until it is added here.
+    fn every_variant() -> Vec<Error> {
+        vec![
+            Error::InvalidId {
+                input: "gcc13".into(),
+                reason: "no `@`".into(),
+            },
+            Error::InvalidEnvCompiler {
+                input: "gcc13".into(),
+                reason: "no `@`".into(),
+            },
+            Error::NotInstalled {
+                spec: "gcc@13".into(),
+                context: String::new(),
+                hint: "run `cxvm install gcc@13`".into(),
+            },
+            Error::RelativeCxvmHome {
+                path: "store".into(),
+            },
+            Error::NoHome,
+            Error::Io {
+                action: "read",
+                path: "/p".into(),
+                source: io::ErrorKind::PermissionDenied.into(),
+                hint: "check the permissions",
+            },
+            Error::Usage {
+                message: "no".into(),
+                hint: "do this instead".into(),
+            },
+            Error::Detect {
+                prefix: "/opt/gcc".into(),
+                reason: "no bin/gcc".into(),
+                hint: "pass the prefix".into(),
+            },
+            Error::Download {
+                url: "https://example.invalid/a".into(),
+                reason: "refused".into(),
+                hint: "retry".into(),
+            },
+            Error::Install {
+                id: "gcc@13.3.0".into(),
+                reason: "broken".into(),
+                hint: "retry".into(),
+            },
+            Error::Build {
+                id: "gcc@10.5.0".into(),
+                failure: "`make` exited with status 2".into(),
+                log: "/c/logs/gcc.log".into(),
+                detail: "    error: termio.h\n".into(),
+                hint: "pass --configure-arg".into(),
+            },
+            Error::Cancelled {
+                what: "the build of gcc@10.5.0".into(),
+            },
+            Error::Diagnosed {
+                summary: "1 error".into(),
+            },
+            Error::InvalidFile {
+                path: "/p/.cxvmrc".into(),
+                message: "bad".into(),
+                hint: "fix it".into(),
+            },
+        ]
+    }
+
+    #[test]
+    fn every_error_says_what_to_do_next() {
+        for err in every_variant() {
+            match &err {
+                Error::InvalidId { .. }
+                | Error::InvalidEnvCompiler { .. }
+                | Error::NotInstalled { .. }
+                | Error::RelativeCxvmHome { .. }
+                | Error::NoHome
+                | Error::Io { .. }
+                | Error::Usage { .. }
+                | Error::Detect { .. }
+                | Error::Download { .. }
+                | Error::Install { .. }
+                | Error::Build { .. }
+                | Error::Cancelled { .. }
+                | Error::Diagnosed { .. }
+                | Error::InvalidFile { .. } => {}
+            }
+            let text = err.to_string();
+            let hint = text
+                .rsplit_once("\n  hint: ")
+                .map(|(_, hint)| hint)
+                .unwrap_or_default();
+            assert!(!hint.trim().is_empty(), "no hint in {text:?}");
+            assert!(
+                !hint.contains('\n'),
+                "the hint is not the last line: {text:?}"
+            );
+        }
+    }
+}

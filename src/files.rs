@@ -129,7 +129,7 @@ pub(crate) fn write_atomic(path: &Path, contents: &str) -> Result<()> {
             action,
             path,
             source,
-            hint: "check that the directory is writable",
+            hint: "check that the directory is writable and the disk is not full",
         }
     };
     let dir = path.parent().unwrap_or(Path::new("."));

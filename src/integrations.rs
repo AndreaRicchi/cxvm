@@ -440,7 +440,8 @@ pub fn ensure_gitignored(root: &Path) -> Result<Gitignore> {
                 action: "read",
                 path,
                 source,
-                hint: "make sure it is a readable file",
+                hint: "make sure it is a readable file, or set `gitignore = false` in the \
+                       `[integrations]` table of .cxvmrc",
             });
         }
     };
