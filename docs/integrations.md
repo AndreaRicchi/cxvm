@@ -28,6 +28,9 @@ cmake -S . -B build/gcc-13.3.0 -DCMAKE_TOOLCHAIN_FILE=.cxvm/toolchain.cmake
 ```
 
 Use one build directory per toolchain. `cxvm use` prints the command with the right directory.
+CMake keeps the compiler a build directory was first configured with: after `cxvm use <other>`,
+a build directory configured for the old pin goes on building with the old compiler, without a
+word, even when the toolchain file is passed again. `cxvm doctor` reports such directories.
 
 ### Presets
 
@@ -71,6 +74,44 @@ cxvm use clang@17 --gcc system     # back to clang's own choice
 - To pair with one of several distro GCCs, link it first: `cxvm link /usr --as
   gcc@15.2.0-local`. This needs clang 16 or later; an older clang always takes the newest GCC
   of a prefix.
+
+## Checking a project
+
+`cxvm doctor` checks the store, the active toolchain, the project of the current directory and
+the download cache, and prints a hint under each problem. It only reads: nothing is fixed for
+you. It exits with status 1 when it finds an error (something fails, or silently uses the wrong
+compiler), and 0 when there are only warnings (something to clean up) or notes.
+
+In the project it checks:
+
+- that the pin, and the GCC of `[clang] gcc`, are installed;
+- that `.cxvm/current`, `toolchain.cmake` and `env` are what `cxvm install` would write now,
+  e.g. after a `git pull` changed `.cxvmrc`;
+- that the `cxvm-…` presets in `CMakeUserPresets.json` are for toolchains that are still
+  installed, and have their toolchain files;
+- the CMake build directories up to three levels below the project root (hidden directories
+  and projects with a `.cxvmrc` of their own are skipped). One configured with a toolchain file
+  of cxvm must build with the compiler that file names now, unless it is named after the
+  toolchain it builds with (`build/gcc-13.3.0`); a mismatch is an error. One configured without
+  a toolchain file is compared with the pin, and a mismatch is a warning, since that may be on
+  purpose. Build directories with a toolchain file of their own, e.g. for cross compiling, are
+  left alone.
+
+The compiler of a build directory is read from `CMakeFiles/<version>/CMake<LANG>Compiler.cmake`:
+a compiler set by a toolchain file is not in `CMakeCache.txt`.
+
+`cxvm remove` refuses, unless given `--force`, a toolchain that the global default or the
+current directory uses: its pin, or the GCC its clang is paired with. It cannot know about
+other projects. `cxvm prune` deletes the download cache and the logs of builds from source;
+`--dry-run` lists them.
+
+### Messages
+
+Errors, warnings and notes go to stderr, each problem with a `hint:` line saying what to do.
+Their labels are coloured on a terminal, the way clap colours its help: `NO_COLOR` turns colour
+off, `CLICOLOR_FORCE` turns it on in a pipe, `CLICOLOR=0` and `TERM=dumb` turn it off. `-v` or
+`--verbose` adds `debug:` lines: how the toolchain was resolved, which processes cxvm runs and
+how they end, what it downloads and which files it writes.
 
 ## Shell and direnv
 

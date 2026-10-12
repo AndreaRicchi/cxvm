@@ -422,3 +422,25 @@ Which releases still use `struct termio`, read from the sources of the ones name
 13.4.0, 14.1.0 to 14.3.0 and 15.1.0. It is gone in 13.5.0, 14.4.0, 15.2.0, 15.3.0, 16.1.0 and
 16.2.0. So on a host with glibc 2.42 or later, expect to need the argument for everything
 before 13.5.0, for 14.1.0 to 14.3.0 and for 15.1.0.
+
+## Catalog updates (M7)
+
+The catalogs are embedded in the binary, so a release of LLVM, xPack or GNU that came out after
+a cxvm release is not installable until the next one. PLAN.md asked for `cxvm catalog update`,
+fetching a newer catalog from the project repository, "or document why it isn't worth it yet".
+It is not built, for these reasons:
+
+- **A second trust root.** The catalog's sha256s decide which binaries cxvm unpacks and runs.
+  Today they come with the cxvm binary, from a tagged release. A catalog fetched later would
+  be trusted on its own, at any time, from wherever it is published. A checksum fetched from
+  the same place only shows that the download is complete, not who wrote it; that needs a
+  signature, and so a signing key to keep and a verifying dependency.
+- **No format version.** The catalog files reject unknown keys (`deny_unknown_fields`), so a
+  newer catalog that records anything new would break every older binary that fetched it.
+- **Little gain.** New catalogs come with new cxvm releases, which the release workflow (M8)
+  makes cheap. Until then, `CXVM_CATALOG=<file>` uses any catalog file instead of the
+  embedded one, e.g. one regenerated from a checkout with `cargo xtask catalog`, which checks
+  provenance as described above.
+
+What would make it worth building: a `format` field in the catalog that old binaries can
+check, and catalogs signed by a release key whose public half is embedded in cxvm.
