@@ -4,7 +4,9 @@
 //! It only reads: it takes no lock and writes nothing. A file it cannot parse is one more
 //! finding, never the end of the report.
 
+use std::fs;
 use std::io::Write;
+use std::path::Path;
 
 use anstyle::{AnsiColor, Style};
 
@@ -14,7 +16,7 @@ use crate::config::Config;
 use crate::detect;
 use crate::error::{Error, Result};
 use crate::files;
-use crate::integrations;
+use crate::integrations::{self, Activation, PROJECT_DIR, presets};
 use crate::output::{self, Label};
 use crate::project::{self, ProjectRc, Resolution};
 use crate::store::{Installed, META_FILE, Meta, StoreEntry};
@@ -150,7 +152,10 @@ fn plural(count: usize, word: &str) -> String {
 /// Every check, by section.
 pub fn check(ctx: &Context) -> Vec<Section> {
     let (store, toolchains) = check_store(ctx);
-    vec![store, check_active(ctx, &toolchains), check_cache(ctx)]
+    let mut sections = vec![store, check_active(ctx, &toolchains)];
+    sections.extend(check_project(ctx, &toolchains));
+    sections.push(check_cache(ctx));
+    sections
 }
 
 /// The style of `ok:`.
@@ -545,6 +550,271 @@ fn usable(toolchain: &Installed) -> bool {
     [&toolchain.cc, &toolchain.cxx]
         .into_iter()
         .all(|driver| files::is_executable(driver))
+}
+
+/// The project of the current directory, if it is in one: its `.cxvmrc`, and what cxvm
+/// generated from it.
+fn check_project(ctx: &Context, toolchains: &[Installed]) -> Option<Section> {
+    let rc_path = project::find_rc(&ctx.cwd)?;
+    let root = rc_path.parent().unwrap_or(&ctx.cwd).to_owned();
+    let mut section = Section::new(format!("Project: {}", root.display()));
+    let rc = match ProjectRc::load(&rc_path) {
+        Ok(rc) => rc,
+        Err(err) => {
+            section.report(Severity::Error, &err);
+            return Some(section);
+        }
+    };
+    if let Some((activation, prefix)) =
+        project_activation(ctx, &mut section, &rc_path, &rc, toolchains)
+    {
+        check_project_dir(&mut section, &root, &activation, prefix);
+        check_presets(&mut section, &root, &rc, &activation, toolchains);
+    }
+    Some(section)
+}
+
+/// What the project's pin activates, and the prefix `.cxvm/current` must point at. `None`
+/// when the pin, or the GCC a clang is paired with, cannot be used, which is reported.
+fn project_activation<'a>(
+    ctx: &Context,
+    section: &mut Section,
+    rc_path: &Path,
+    rc: &ProjectRc,
+    toolchains: &'a [Installed],
+) -> Option<(Activation, Option<&'a Path>)> {
+    let spec = &rc.compiler;
+    let Spec::Toolchain { .. } = spec else {
+        let activation = Activation::for_system(ctx.path_var.as_deref(), ctx.paths.data_dir());
+        return Some((activation, None));
+    };
+    let overridden = ctx.env_compiler.as_deref().is_some_and(|v| !v.is_empty());
+    let toolchain = match select(spec, toolchains) {
+        Some(toolchain) if usable(toolchain) => toolchain,
+        Some(toolchain) => {
+            section.note(broken(toolchain), None);
+            return None;
+        }
+        // The active toolchain section reports it, unless CXVM_COMPILER replaced the pin.
+        None if !overridden => {
+            section.note(
+                format!(
+                    "{PROJECT_DIR}/ was not checked: the pinned {spec} is not installed (see \
+                     above)"
+                ),
+                None,
+            );
+            return None;
+        }
+        None => {
+            let context = format!(" (set by {})", rc_path.display());
+            match commands::not_installed_error(&ctx.store(), spec, context) {
+                Ok(err) | Err(err) => section.report(Severity::Error, &err),
+            }
+            return None;
+        }
+    };
+    let gcc = match &rc.clang_gcc {
+        Some(gcc_spec) if toolchain.id.kind() == Kind::Clang => {
+            match select(gcc_spec, toolchains) {
+                Some(gcc) if usable(gcc) => Some(gcc),
+                Some(gcc) => {
+                    section.note(broken(gcc), None);
+                    return None;
+                }
+                None => {
+                    let context = commands::clang_gcc_context(rc_path);
+                    match commands::not_installed_error(&ctx.store(), gcc_spec, context) {
+                        Ok(err) | Err(err) => section.report(Severity::Error, &err),
+                    }
+                    return None;
+                }
+            }
+        }
+        _ => None,
+    };
+    match Activation::for_toolchain(toolchain, gcc) {
+        Ok(activation) => {
+            if let Some(pairing) = &activation.pairing {
+                section.ok(format!(
+                    "{} uses the headers and libstdc++ of {} ({})",
+                    toolchain.id, pairing.gcc, pairing.flag
+                ));
+            }
+            Some((activation, Some(toolchain.path.as_path())))
+        }
+        Err(err) => {
+            section.report(Severity::Error, &err);
+            None
+        }
+    }
+}
+
+/// Whether `a` and `b` name the same file, after following symlinks where they resolve.
+fn same_path(a: &Path, b: &Path) -> bool {
+    let resolve = |path: &Path| path.canonicalize().unwrap_or_else(|_| path.to_owned());
+    resolve(a) == resolve(b)
+}
+
+/// `.cxvm/`: whether `current`, `toolchain.cmake` and `env` are what `cxvm install` would
+/// write for `activation` now, `prefix` being where `current` must point.
+fn check_project_dir(
+    section: &mut Section,
+    root: &Path,
+    activation: &Activation,
+    prefix: Option<&Path>,
+) {
+    let dir = root.join(PROJECT_DIR);
+    let label = &activation.label;
+    let regenerate = format!("`cxvm install` in {} regenerates it", root.display());
+    if !dir.is_dir() {
+        section.warning(
+            format!(
+                "{} is missing: nothing was generated here yet",
+                dir.display()
+            ),
+            regenerate,
+        );
+        return;
+    }
+    let before = section.findings();
+    let current = dir.join("current");
+    match (current.symlink_metadata(), prefix) {
+        (Err(_), None) => {}
+        (Err(_), Some(_)) => {
+            section.warning(format!("{} is missing", current.display()), &regenerate)
+        }
+        (Ok(meta), _) if !meta.is_symlink() => section.error(
+            format!("{} is not a symlink", current.display()),
+            "cxvm owns the .cxvm folder: move what you keep there elsewhere, then run `cxvm \
+             install`",
+        ),
+        (Ok(_), None) => section.warning(
+            format!(
+                "{} is left from an earlier pin: `system` has none",
+                current.display()
+            ),
+            "`cxvm install` removes it",
+        ),
+        (Ok(_), Some(prefix)) => {
+            let target = fs::read_link(&current).unwrap_or_default();
+            if !target.exists() {
+                section.error(
+                    format!(
+                        "{} points at {}, which is gone",
+                        current.display(),
+                        target.display()
+                    ),
+                    format!("`cxvm install` in {} points it at {label}", root.display()),
+                );
+            } else if !same_path(&target, prefix) {
+                section.warning(
+                    format!(
+                        "{} points at {}, not at {label} in {}",
+                        current.display(),
+                        target.display(),
+                        prefix.display()
+                    ),
+                    &regenerate,
+                );
+            }
+        }
+    }
+    let files = [
+        (
+            dir.join("toolchain.cmake"),
+            integrations::render_toolchain_cmake(activation),
+        ),
+        (dir.join("env"), integrations::render_env_file(activation)),
+    ];
+    for (path, expected) in files {
+        check_generated(section, &path, &expected, label, &regenerate);
+    }
+    if section.findings() == before {
+        section.ok(format!("{PROJECT_DIR}/ matches {label}"));
+    }
+}
+
+/// A file cxvm generated for `label`, which must read `expected` now.
+fn check_generated(section: &mut Section, path: &Path, expected: &str, label: &str, fix: &str) {
+    match fs::read_to_string(path) {
+        Ok(text) if text == expected => {}
+        Ok(text) => {
+            let why = match integrations::generated_for(&text) {
+                Some(old) if old != label => {
+                    format!("it was generated for {old}, and the project pins {label}")
+                }
+                _ => format!("the paths of {label} changed since it was generated"),
+            };
+            section.warning(format!("{} is out of date: {why}", path.display()), fix);
+        }
+        Err(_) => section.warning(format!("{} is missing", path.display()), fix),
+    }
+}
+
+/// cxvm's presets in `CMakeUserPresets.json`: each for a toolchain that is there, with its
+/// toolchain file, and with `cmake_presets` one for the pin.
+fn check_presets(
+    section: &mut Section,
+    root: &Path,
+    rc: &ProjectRc,
+    activation: &Activation,
+    toolchains: &[Installed],
+) {
+    let file = root.join(presets::FILE);
+    let names = match presets::names(root) {
+        Ok(names) => names,
+        Err(err) => return section.report(Severity::Error, &err),
+    };
+    let before = section.findings();
+    for name in &names {
+        let Some(label) = presets::label(name) else {
+            continue;
+        };
+        let toolchain_file = root.join(presets::toolchain_file(&label));
+        let installed = label == "system" || toolchains.iter().any(|t| t.id.to_string() == label);
+        if !installed {
+            let again = match label.split_once('-') {
+                Some(_) => format!("register it again with `cxvm link <prefix> --as {label}`"),
+                None => format!("install it again with `cxvm install {label}`"),
+            };
+            section.warning(
+                format!(
+                    "the preset {name} in {} is for {label}, which is not installed",
+                    file.display()
+                ),
+                format!(
+                    "delete the preset (cxvm leaves it, since presets of yours may inherit from \
+                     it), or {again}"
+                ),
+            );
+        } else if label == activation.label {
+            let fix = format!("`cxvm install` in {} regenerates it", root.display());
+            let expected = integrations::render_toolchain_cmake(activation);
+            check_generated(section, &toolchain_file, &expected, &label, &fix);
+        } else if !toolchain_file.exists() {
+            section.warning(
+                format!(
+                    "{}, the toolchain file of the preset {name}, is missing",
+                    toolchain_file.display()
+                ),
+                format!("`cxvm use {label}` writes it again, or delete the preset"),
+            );
+        }
+    }
+    let name = presets::preset_name(&activation.label);
+    if rc.integrations.cmake_presets && !names.contains(&name) {
+        section.warning(
+            format!("{} has no preset {name} for the pin", file.display()),
+            format!("`cxvm install` in {} adds it", root.display()),
+        );
+    }
+    if !names.is_empty() && section.findings() == before {
+        section.ok(format!(
+            "the presets of cxvm in {} are up to date",
+            presets::FILE
+        ));
+    }
 }
 
 /// The download cache and the build logs, which `cxvm prune` deletes.

@@ -596,7 +596,7 @@ fn paired_gcc(
 }
 
 /// Where a pairing comes from, for messages: `` (`[clang] gcc` in /p/.cxvmrc)``.
-fn clang_gcc_context(rc: &Path) -> String {
+pub(crate) fn clang_gcc_context(rc: &Path) -> String {
     format!(" (`[clang] gcc` in {})", rc.display())
 }
 

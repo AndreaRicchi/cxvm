@@ -321,3 +321,217 @@ fn no_system_compiler_is_an_error_when_system_is_active() {
             "  error: there is no `cc` on PATH for `system`\n",
         ));
 }
+
+/// A sandbox where `proj` pins `id` through `cxvm use`, with `.cxvm/` generated.
+fn project_using(id: &str) -> Sandbox {
+    let s = sandbox();
+    let (kind, version) = id.split_once('@').unwrap();
+    s.install_with_meta(kind, version);
+    s.cxvm("").args(["use", id]).assert().success();
+    s
+}
+
+#[test]
+fn a_project_whose_files_match_its_pin_is_fine() {
+    let s = project_using("gcc@13.3.0");
+    s.cxvm("a/b")
+        .arg("doctor")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(format!(
+            "Project: {}\n  ok: .cxvm/ matches gcc@13.3.0\n",
+            s.project().display()
+        )))
+        .stdout(predicate::str::ends_with("\nNo problems found\n"));
+}
+
+#[test]
+fn a_fresh_clone_without_cxvm_dir_is_a_warning() {
+    let s = sandbox();
+    s.install_with_meta("gcc", "13.3.0");
+    s.pin("", "gcc@13.3.0");
+    s.cxvm("")
+        .arg("doctor")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(format!(
+            "  warning: {} is missing: nothing was generated here yet\n    \
+             hint: `cxvm install` in {} regenerates it\n",
+            s.project().join(".cxvm").display(),
+            s.project().display()
+        )));
+}
+
+#[test]
+fn files_left_from_another_pin_are_out_of_date() {
+    let s = project_using("gcc@13.3.0");
+    let other = s.install_with_meta("gcc", "14.2.0");
+    // As after a `git pull` that changed the pin.
+    s.pin("", "gcc@14.2.0");
+    let dir = s.project().join(".cxvm");
+    s.cxvm("")
+        .arg("doctor")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(format!(
+            "  warning: {} points at {}, not at gcc@14.2.0 in {}\n",
+            dir.join("current").display(),
+            s.store().join("toolchains/gcc/13.3.0").display(),
+            other.display()
+        )))
+        .stdout(predicate::str::contains(format!(
+            "  warning: {} is out of date: it was generated for gcc@13.3.0, and the project \
+             pins gcc@14.2.0\n",
+            dir.join("toolchain.cmake").display()
+        )))
+        .stdout(predicate::str::contains(format!(
+            "  warning: {} is out of date",
+            dir.join("env").display()
+        )))
+        .stdout(predicate::str::ends_with(
+            "\n3 warnings; nothing is broken\n",
+        ));
+    s.cxvm("").arg("install").assert().success();
+    s.cxvm("")
+        .arg("doctor")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "  ok: .cxvm/ matches gcc@14.2.0\n",
+        ));
+}
+
+#[test]
+fn a_current_link_to_a_removed_toolchain_is_an_error() {
+    let s = project_using("gcc@13.3.0");
+    s.install_with_meta("gcc", "14.2.0");
+    s.pin("", "gcc@14.2.0");
+    let old = s.store().join("toolchains/gcc/13.3.0");
+    fs::remove_dir_all(&old).unwrap();
+    s.cxvm("")
+        .arg("doctor")
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains(format!(
+            "  error: {} points at {}, which is gone\n    hint: `cxvm install` in {} points it \
+             at gcc@14.2.0\n",
+            s.project().join(".cxvm/current").display(),
+            old.display(),
+            s.project().display()
+        )));
+}
+
+#[test]
+fn a_current_that_is_not_a_symlink_is_an_error() {
+    let s = project_using("gcc@13.3.0");
+    let current = s.project().join(".cxvm/current");
+    fs::remove_file(&current).unwrap();
+    fs::create_dir(&current).unwrap();
+    s.cxvm("")
+        .arg("doctor")
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains(format!(
+            "  error: {} is not a symlink\n",
+            current.display()
+        )));
+}
+
+#[test]
+fn a_pairing_with_a_gcc_that_is_not_installed_is_an_error() {
+    let s = project_using("clang@19.1.0");
+    let rc = s.project().join(".cxvmrc");
+    fs::write(
+        &rc,
+        "compiler = \"clang@19.1.0\"\n\n[clang]\ngcc = \"gcc@12.4.0\"\n",
+    )
+    .unwrap();
+    s.cxvm("")
+        .arg("doctor")
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains(format!(
+            "  error: gcc@12.4.0 is not installed (`[clang] gcc` in {})\n",
+            rc.display()
+        )));
+}
+
+#[test]
+fn a_pin_replaced_by_cxvm_compiler_is_still_checked() {
+    let s = sandbox();
+    s.install_with_meta("gcc", "13.3.0");
+    let rc = s.pin("", "gcc@14.2.0");
+    s.cxvm("")
+        .arg("doctor")
+        .env("CXVM_COMPILER", "gcc@13.3.0")
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains(format!(
+            "  error: gcc@14.2.0 is not installed (set by {})\n",
+            rc.display()
+        )));
+}
+
+#[test]
+fn an_invalid_cxvmrc_is_reported_once() {
+    let s = sandbox();
+    let rc = s.pin("", "gcc13");
+    s.cxvm("")
+        .arg("doctor")
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains(format!(
+            "  note: cannot tell which toolchain is active until {} is fixed\n",
+            rc.display()
+        )))
+        .stdout(predicate::str::contains(format!(
+            "  error: {} is invalid",
+            rc.display()
+        )))
+        .stderr(predicate::str::contains("found 1 error\n"));
+}
+
+#[test]
+fn presets_of_toolchains_that_are_gone_are_warnings() {
+    let s = sandbox();
+    s.install_with_meta("gcc", "13.3.0");
+    s.install_with_meta("clang", "19.1.0");
+    fs::write(
+        s.project().join(".cxvmrc"),
+        "compiler = \"gcc@13.3.0\"\n\n[integrations]\ncmake_presets = true\n",
+    )
+    .unwrap();
+    s.cxvm("").args(["use", "gcc@13.3.0"]).assert().success();
+    s.cxvm("").args(["use", "clang@19.1.0"]).assert().success();
+    s.cxvm("")
+        .arg("doctor")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "  ok: the presets of cxvm in CMakeUserPresets.json are up to date\n",
+        ));
+
+    fs::remove_dir_all(s.store().join("toolchains/gcc/13.3.0")).unwrap();
+    s.cxvm("")
+        .arg("doctor")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(format!(
+            "  warning: the preset cxvm-gcc-13.3.0 in {} is for gcc@13.3.0, which is not \
+             installed\n    hint: delete the preset (cxvm leaves it, since presets of yours may \
+             inherit from it), or install it again with `cxvm install gcc@13.3.0`\n",
+            s.project().join("CMakeUserPresets.json").display()
+        )));
+
+    fs::remove_file(s.project().join(".cxvm/toolchains/clang-19.1.0.cmake")).unwrap();
+    s.cxvm("")
+        .arg("doctor")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(format!(
+            "  warning: {} is missing\n",
+            s.project()
+                .join(".cxvm/toolchains/clang-19.1.0.cmake")
+                .display()
+        )));
+}

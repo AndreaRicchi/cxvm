@@ -28,6 +28,34 @@ pub fn toolchain_file(label: &str) -> String {
     format!("{PROJECT_DIR}/toolchains/{}.cmake", slug(label))
 }
 
+/// The names of cxvm's presets (`cxvm-…`) in the `CMakeUserPresets.json` of the project at
+/// `root`; none without the file.
+pub fn names(root: &Path) -> Result<Vec<String>> {
+    let path = root.join(FILE);
+    let Some(text) = files::read_text(&path)? else {
+        return Ok(Vec::new());
+    };
+    let doc = Document::parse(&path, &text, OFF)?;
+    let presets = doc.array_in(&doc.object, "configurePresets")?;
+    Ok(presets
+        .elements()
+        .into_iter()
+        .filter_map(|element| json::string_in(&element.as_object()?, "name"))
+        .filter(|name| name.starts_with("cxvm-"))
+        .collect())
+}
+
+/// The toolchain of the preset `name`, as [`preset_name`] made it: `gcc@13.3.0` for
+/// `cxvm-gcc-13.3.0`.
+pub fn label(name: &str) -> Option<String> {
+    let slug = name.strip_prefix("cxvm-")?;
+    if slug == "system" {
+        return Some(slug.to_owned());
+    }
+    let (kind, version) = slug.split_once('-')?;
+    Some(format!("{kind}@{version}"))
+}
+
 /// What to write in the project at `root` so that `CMakeUserPresets.json` has a preset for
 /// `activation`: the preset's toolchain file and, unless it is up to date, the presets file.
 pub fn plan(root: &Path, activation: &Activation) -> Result<Vec<FileEdit>> {
@@ -154,6 +182,27 @@ mod tests {
       "binaryDir": "${sourceDir}/build/gcc-13.3.0",
       "toolchainFile": "${sourceDir}/.cxvm/toolchains/gcc-13.3.0.cmake"
     }"#;
+
+    #[test]
+    fn preset_names_give_back_their_toolchain() {
+        for label in ["gcc@13.3.0", "clang@17.0.6", "gcc@11.4.0-local", "system"] {
+            assert_eq!(super::label(&preset_name(label)).as_deref(), Some(label));
+        }
+        assert_eq!(super::label("dev"), None);
+        assert_eq!(super::label("cxvm-gcc"), None);
+    }
+
+    #[test]
+    fn names_lists_the_presets_of_cxvm_only() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(names(dir.path()).unwrap().is_empty());
+        let text = merged(
+            "{\"version\": 6, \"configurePresets\": [{\"name\": \"dev\"}, \"odd\"]}",
+            &gcc(),
+        );
+        std::fs::write(dir.path().join(FILE), text).unwrap();
+        assert_eq!(names(dir.path()).unwrap(), ["cxvm-gcc-13.3.0"]);
+    }
 
     #[test]
     fn a_new_file_has_the_version_and_the_preset() {
