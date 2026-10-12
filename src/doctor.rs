@@ -4,9 +4,13 @@
 //! It only reads: it takes no lock and writes nothing. A file it cannot parse is one more
 //! finding, never the end of the report.
 
+pub mod cmake;
+
+use cmake::{Compiler, Lang};
+
 use std::fs;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anstyle::{AnsiColor, Style};
 
@@ -17,7 +21,7 @@ use crate::detect;
 use crate::error::{Error, Result};
 use crate::files;
 use crate::integrations::{self, Activation, PROJECT_DIR, presets};
-use crate::output::{self, Label};
+use crate::output::{self, Label, debug};
 use crate::project::{self, ProjectRc, Resolution};
 use crate::store::{Installed, META_FILE, Meta, StoreEntry};
 use crate::toolchain::{self, Kind, Spec};
@@ -565,12 +569,13 @@ fn check_project(ctx: &Context, toolchains: &[Installed]) -> Option<Section> {
             return Some(section);
         }
     };
-    if let Some((activation, prefix)) =
-        project_activation(ctx, &mut section, &rc_path, &rc, toolchains)
-    {
-        check_project_dir(&mut section, &root, &activation, prefix);
-        check_presets(&mut section, &root, &rc, &activation, toolchains);
+    let activation = project_activation(ctx, &mut section, &rc_path, &rc, toolchains);
+    if let Some((activation, prefix)) = &activation {
+        check_project_dir(&mut section, &root, activation, *prefix);
+        check_presets(&mut section, &root, &rc, activation, toolchains);
     }
+    let activation = activation.as_ref().map(|(activation, _)| activation);
+    check_build_dirs(&mut section, &root, activation, toolchains);
     Some(section)
 }
 
@@ -814,6 +819,178 @@ fn check_presets(
             "the presets of cxvm in {} are up to date",
             presets::FILE
         ));
+    }
+}
+
+/// The compilers `activation` makes CMake use, by language.
+fn activation_compilers(activation: &Activation) -> Vec<(Lang, Compiler)> {
+    let arg = activation
+        .pairing
+        .as_ref()
+        .map(|pairing| pairing.flag.clone())
+        .unwrap_or_default();
+    [(Lang::Cxx, &activation.cxx), (Lang::C, &activation.cc)]
+        .into_iter()
+        .filter_map(|(lang, path)| {
+            let compiler = Compiler {
+                path: path.clone()?,
+                arg: arg.clone(),
+            };
+            Some((lang, compiler))
+        })
+        .collect()
+}
+
+/// What a build dir should build with, and why.
+enum Expected {
+    /// What the cxvm toolchain file it was configured with names now.
+    ToolchainFile {
+        file: PathBuf,
+        label: String,
+        compilers: Vec<(Lang, Compiler)>,
+    },
+    /// No toolchain file: the pin's compilers.
+    Pin {
+        label: String,
+        compilers: Vec<(Lang, Compiler)>,
+    },
+}
+
+/// The CMake build dirs of the project at `root`. One configured with a toolchain file of
+/// cxvm must build with the compilers that file names now, unless it is named after the
+/// toolchain it builds with (`build/gcc-13.3.0`, as `cxvm use` suggests); one configured
+/// without a toolchain file should build with `activation`, the pin's. Build dirs with
+/// toolchain files of their own, e.g. for cross compiling, are left alone.
+fn check_build_dirs(
+    section: &mut Section,
+    root: &Path,
+    activation: Option<&Activation>,
+    toolchains: &[Installed],
+) {
+    let cxvm_dir = root.join(PROJECT_DIR);
+    for build in cmake::build_dirs(root) {
+        let shown = build.path.display();
+        let expected = match &build.toolchain_file {
+            None => match activation {
+                Some(activation) => Expected::Pin {
+                    label: activation.label.clone(),
+                    compilers: activation_compilers(activation),
+                },
+                None => continue,
+            },
+            Some(file) => match fs::read_to_string(file) {
+                Ok(text) => match integrations::generated_for(&text) {
+                    Some(label) => Expected::ToolchainFile {
+                        file: file.clone(),
+                        label: label.to_owned(),
+                        compilers: cmake::toolchain_compilers(&text),
+                    },
+                    None => {
+                        debug!(
+                            "not checking {shown}: {} is not a toolchain file of cxvm",
+                            file.display()
+                        );
+                        continue;
+                    }
+                },
+                Err(_) if file.starts_with(&cxvm_dir) => {
+                    section.warning(
+                        format!(
+                            "{shown} was configured with {}, which is gone",
+                            file.display()
+                        ),
+                        format!("delete {shown} if you no longer need it"),
+                    );
+                    continue;
+                }
+                Err(_) => {
+                    debug!("not checking {shown}: {} is gone", file.display());
+                    continue;
+                }
+            },
+        };
+        let reconfigure = format!(
+            "delete {shown} and configure it again: CMake keeps the compiler a build dir was \
+             first configured with"
+        );
+        if let Some((lang, gone)) = (build.compilers.iter()).find(|(_, c)| !c.path.exists()) {
+            section.error(
+                format!(
+                    "{shown} builds {} with {}, which is gone",
+                    lang.name(),
+                    gone.path.display()
+                ),
+                reconfigure,
+            );
+            continue;
+        }
+        let (Expected::ToolchainFile { compilers, .. } | Expected::Pin { compilers, .. }) =
+            &expected;
+        let mismatch = build.compilers.iter().find_map(|(lang, actual)| {
+            let (_, wanted) = compilers.iter().find(|(l, _)| l == lang)?;
+            (!actual.same_as(wanted)).then_some((*lang, actual, wanted))
+        });
+        let Some((lang, actual, wanted)) = mismatch else {
+            let label = match &expected {
+                Expected::ToolchainFile { label, .. } | Expected::Pin { label, .. } => label,
+            };
+            section.ok(format!("{shown} builds with {label}"));
+            continue;
+        };
+        // A build dir per toolchain, named after the one it builds with.
+        let named_after = toolchains.iter().find(|toolchain| {
+            let slug = integrations::slug(&toolchain.id.to_string());
+            build.path.file_name() == Some(slug.as_ref())
+                && build.compilers.iter().all(|(lang, compiler)| {
+                    let driver = match lang {
+                        Lang::C => &toolchain.cc,
+                        Lang::Cxx => &toolchain.cxx,
+                    };
+                    let driver = Compiler {
+                        path: driver.clone(),
+                        arg: compiler.arg.clone(),
+                    };
+                    compiler.same_as(&driver)
+                })
+        });
+        if let Some(toolchain) = named_after {
+            section.ok(format!("{shown} builds with {}", toolchain.id));
+            continue;
+        }
+        let lang = lang.name();
+        match &expected {
+            Expected::ToolchainFile { file, label, .. } => {
+                let mut hint = reconfigure;
+                if same_path(file, &cxvm_dir.join("toolchain.cmake")) {
+                    hint.push_str(&format!(
+                        "; or keep a build dir per toolchain: `cmake -S {} -B {}/build/{} \
+                         -DCMAKE_TOOLCHAIN_FILE={}`",
+                        root.display(),
+                        root.display(),
+                        integrations::slug(label),
+                        file.display()
+                    ));
+                }
+                section.error(
+                    format!(
+                        "{shown} builds {lang} with {actual}, but its toolchain file {} now names \
+                         {wanted} ({label})",
+                        file.display()
+                    ),
+                    hint,
+                );
+            }
+            Expected::Pin { label, .. } => section.warning(
+                format!(
+                    "{shown} builds {lang} with {actual}, and the project pins {label} ({wanted})"
+                ),
+                format!(
+                    "if it should follow the pin, delete it and configure it again with \
+                     `-DCMAKE_TOOLCHAIN_FILE={}`",
+                    cxvm_dir.join("toolchain.cmake").display()
+                ),
+            ),
+        }
     }
 }
 

@@ -535,3 +535,151 @@ fn presets_of_toolchains_that_are_gone_are_warnings() {
                 .display()
         )));
 }
+
+/// Writes what CMake 4.2.3 leaves in `dir` after configuring it with `toolchain_file`: the
+/// C++ compiler is recorded in `CMakeFiles/`, not in the cache.
+fn configured(
+    dir: &std::path::Path,
+    toolchain_file: Option<&std::path::Path>,
+    cxx: &std::path::Path,
+) {
+    fs::create_dir_all(dir.join("CMakeFiles/4.2.3")).unwrap();
+    let mut cache = String::from(
+        "CMAKE_CACHE_MAJOR_VERSION:INTERNAL=4\n\
+         CMAKE_CACHE_MINOR_VERSION:INTERNAL=2\n\
+         CMAKE_CACHE_PATCH_VERSION:INTERNAL=3\n",
+    );
+    if let Some(file) = toolchain_file {
+        cache.push_str(&format!(
+            "CMAKE_TOOLCHAIN_FILE:FILEPATH={}\n",
+            file.display()
+        ));
+    }
+    fs::write(dir.join("CMakeCache.txt"), cache).unwrap();
+    fs::write(
+        dir.join("CMakeFiles/4.2.3/CMakeCXXCompiler.cmake"),
+        format!(
+            "set(CMAKE_CXX_COMPILER \"{}\")\nset(CMAKE_CXX_COMPILER_ARG1 \"\")\n",
+            cxx.display()
+        ),
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_build_dir_left_on_the_compiler_of_an_earlier_pin_is_an_error() {
+    let s = project_using("gcc@13.3.0");
+    let toolchain_file = s.project().join(".cxvm/toolchain.cmake");
+    let gxx = s.store().join("toolchains/gcc/13.3.0/bin/g++");
+    let build = s.project().join("build");
+    configured(&build.join("x"), Some(&toolchain_file), &gxx);
+    configured(&build.join("gcc-13.3.0"), Some(&toolchain_file), &gxx);
+    s.cxvm("")
+        .arg("doctor")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(format!(
+            "  ok: {} builds with gcc@13.3.0\n",
+            build.join("x").display()
+        )));
+
+    let clang = s.install_with_meta("clang", "19.1.0");
+    s.cxvm("").args(["use", "clang@19.1.0"]).assert().success();
+    configured(
+        &build.join("clang-19.1.0"),
+        Some(&toolchain_file),
+        &clang.join("bin/clang++"),
+    );
+    s.cxvm("")
+        .arg("doctor")
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains(format!(
+            "  error: {} builds C++ with {}, but its toolchain file {} now names {} \
+             (clang@19.1.0)\n    hint: delete {} and configure it again: CMake keeps the \
+             compiler a build dir was first configured with; or keep a build dir per toolchain: \
+             `cmake -S {root} -B {root}/build/clang-19.1.0 -DCMAKE_TOOLCHAIN_FILE={}`\n",
+            build.join("x").display(),
+            gxx.display(),
+            toolchain_file.display(),
+            clang.join("bin/clang++").display(),
+            build.join("x").display(),
+            toolchain_file.display(),
+            root = s.project().display(),
+        )))
+        .stdout(predicate::str::contains(format!(
+            "  ok: {} builds with gcc@13.3.0\n",
+            build.join("gcc-13.3.0").display()
+        )))
+        .stdout(predicate::str::contains(format!(
+            "  ok: {} builds with clang@19.1.0\n",
+            build.join("clang-19.1.0").display()
+        )))
+        .stderr(predicate::str::contains("found 1 error\n"));
+}
+
+#[test]
+fn a_build_dir_configured_without_toolchain_file_is_compared_with_the_pin() {
+    let s = project_using("gcc@13.3.0");
+    let build = s.project().join("build");
+    configured(&build, None, &s.bin().join("c++"));
+    s.cxvm("")
+        .arg("doctor")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(format!(
+            "  warning: {} builds C++ with {}, and the project pins gcc@13.3.0 ({})\n    \
+             hint: if it should follow the pin, delete it and configure it again with \
+             `-DCMAKE_TOOLCHAIN_FILE={}`\n",
+            build.display(),
+            s.bin().join("c++").display(),
+            s.store().join("toolchains/gcc/13.3.0/bin/g++").display(),
+            s.project().join(".cxvm/toolchain.cmake").display()
+        )));
+}
+
+#[test]
+fn build_dirs_with_toolchain_files_of_their_own_are_left_alone() {
+    let s = project_using("gcc@13.3.0");
+    let cross = s.project().join("cmake/arm-none-eabi.cmake");
+    fs::create_dir_all(cross.parent().unwrap()).unwrap();
+    fs::write(&cross, "set(CMAKE_SYSTEM_NAME Generic)\n").unwrap();
+    let build = s.project().join("build-arm");
+    configured(&build, Some(&cross), &s.path("arm/bin/arm-none-eabi-g++"));
+    s.cxvm("")
+        .arg("doctor")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("build-arm").not())
+        .stdout(predicate::str::ends_with("\nNo problems found\n"));
+    s.cxvm("")
+        .args(["-v", "doctor"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(format!(
+            "debug: not checking {}: {} is not a toolchain file of cxvm\n",
+            build.display(),
+            cross.display()
+        )));
+}
+
+#[test]
+fn a_build_dir_whose_compiler_is_gone_is_an_error() {
+    let s = project_using("gcc@13.3.0");
+    let removed = s.store().join("toolchains/gcc/12.4.0/bin/g++");
+    let build = s.project().join("build/gcc-12.4.0");
+    configured(
+        &build,
+        Some(&s.project().join(".cxvm/toolchain.cmake")),
+        &removed,
+    );
+    s.cxvm("")
+        .arg("doctor")
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains(format!(
+            "  error: {} builds C++ with {}, which is gone\n",
+            build.display(),
+            removed.display()
+        )));
+}
