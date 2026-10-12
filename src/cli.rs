@@ -68,7 +68,7 @@ pub enum Command {
     Remove {
         /// Exact toolchain id, e.g. `gcc@13.3.0`
         id: String,
-        /// Remove even if the toolchain is the global default
+        /// Remove even if the global default or the current project uses the toolchain
         #[arg(long)]
         force: bool,
     },

@@ -12,6 +12,7 @@ use crate::backends::source::{self, GnuSource, HostCompiler};
 use crate::catalog::{self, Catalog, Release};
 use crate::config::Config;
 use crate::detect;
+use crate::doctor;
 use crate::error::{Error, Result};
 use crate::files;
 use crate::integrations::{self, Activation, FileEdit, Gitignore, Shell, presets, vscode};
@@ -1132,8 +1133,9 @@ fn install_release(
     Ok(toolchain)
 }
 
-/// `cxvm remove`: delete a toolchain cxvm installed. Refuses the global default unless
-/// `force`, and warns when the current directory still pins it.
+/// `cxvm remove`: delete a toolchain cxvm installed. Unless `force`, refuses the global
+/// default, and what the current directory uses: its pin, or the GCC its clang is paired
+/// with. Warns about the project's CMake build dirs that build with it.
 pub fn remove(ctx: &Context, id: &str, force: bool) -> Result<()> {
     let id: ToolchainId = id.parse()?;
     let store = ctx.store();
@@ -1193,6 +1195,73 @@ pub fn remove(ctx: &Context, id: &str, force: bool) -> Result<()> {
         });
     }
 
+    // What the current directory loses: its pin, or the GCC its clang is paired with. Other
+    // projects cannot be known.
+    let resolution = ctx.resolve().ok();
+    let pinned = resolution
+        .as_ref()
+        .filter(|r| !matches!(r.source, Source::Global(_)) && loses(&r.spec))
+        .map(|r| r.source.clone());
+    let paired = match &resolution {
+        Some(Resolution {
+            spec: Spec::Toolchain {
+                kind: Kind::Clang, ..
+            },
+            ..
+        }) => project::find_rc(&ctx.cwd).filter(|rc| {
+            ProjectRc::load(rc)
+                .ok()
+                .and_then(|rc| rc.clang_gcc)
+                .is_some_and(|gcc| loses(&gcc))
+        }),
+        _ => None,
+    };
+    if !force {
+        if let Some(source) = &pinned {
+            return Err(Error::Usage {
+                message: format!("{id} is pinned here ({source})"),
+                hint: format!(
+                    "pin another with `cxvm use <id>` first, or run `cxvm remove {id} --force`"
+                ),
+            });
+        }
+        if let Some(rc) = &paired {
+            return Err(Error::Usage {
+                message: format!(
+                    "clang uses the headers and libstdc++ of {id} here{}",
+                    clang_gcc_context(rc)
+                ),
+                hint: format!(
+                    "pair clang with another GCC with `cxvm use <clang id> --gcc <id>` first, \
+                     or run `cxvm remove {id} --force`"
+                ),
+            });
+        }
+    }
+    // The build dirs of this project that build with it, while its files still resolve.
+    let builds: Vec<PathBuf> = match project::find_rc(&ctx.cwd) {
+        Some(rc) => {
+            let root = rc.parent().unwrap_or(&ctx.cwd);
+            let prefix = toolchain
+                .path
+                .canonicalize()
+                .unwrap_or(toolchain.path.clone());
+            doctor::cmake::build_dirs(root)
+                .into_iter()
+                .filter(|build| {
+                    build.compilers.iter().any(|(_, compiler)| {
+                        compiler
+                            .path
+                            .canonicalize()
+                            .is_ok_and(|path| path.starts_with(&prefix))
+                    })
+                })
+                .map(|build| build.path)
+                .collect()
+        }
+        None => Vec::new(),
+    };
+
     store.remove(&lock, &id)?;
     drop(lock);
     println!("Removed {id} from {}", toolchain.path.display());
@@ -1201,13 +1270,24 @@ pub fn remove(ctx: &Context, id: &str, force: bool) -> Result<()> {
             "{id} was the global default; set another with `cxvm global <id>`"
         ));
     }
-    if let Ok(Resolution { spec, source }) = ctx.resolve()
-        && !matches!(source, Source::Global(_))
-        && loses(&spec)
-    {
+    if let Some(source) = pinned {
         output::warning(format!(
             "{id} is still pinned here ({source}); reinstall it with `cxvm install`, or pin \
              another with `cxvm use <id>`"
+        ));
+    }
+    if let Some(rc) = paired {
+        output::warning(format!(
+            "clang is still paired with {id} here{}; reinstall it with `cxvm install`, or \
+             pair clang with another GCC with `cxvm use <clang id> --gcc <id>`",
+            clang_gcc_context(&rc)
+        ));
+    }
+    for build in builds {
+        output::warning(format!(
+            "{} was configured with {id} and cannot build any more; delete it, or configure \
+             it again with another toolchain",
+            build.display()
         ));
     }
     Ok(())
