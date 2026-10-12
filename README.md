@@ -47,7 +47,7 @@ By hand, from the [releases page](https://github.com/AndreaRicchi/cxvm/releases)
 
 ```sh
 sha256sum -c cxvm-x86_64-unknown-linux-musl.tar.gz.sha256
-gh attestation verify cxvm-x86_64-unknown-linux-musl.tar.gz --repo AndreaRicchi/cxvm   # optional
+gh attestation verify cxvm-x86_64-unknown-linux-musl.tar.gz --repo AndreaRicchi/cxvm   # optional, after 0.1.0
 tar -xzf cxvm-x86_64-unknown-linux-musl.tar.gz
 cp cxvm-x86_64-unknown-linux-musl/cxvm ~/.local/bin/
 ```

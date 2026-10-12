@@ -124,6 +124,7 @@ _(Append dated one-line entries: what was decided and why.)_
 - 2026-10-12: Rust 1.89 had never been tried; it builds, and a CI job keeps it so with `cargo +1.89 check --locked` (`+1.89` because `rust-toolchain.toml` selects stable).
 - 2026-10-12: `install.sh` is POSIX sh, uses curl or wget, refuses an archive that does not match its `.sha256`, and installs into `$XDG_BIN_HOME` or `~/.local/bin` through a temporary file and a rename. No sudo, no startup files edited; it prints the `PATH` line instead. `CXVM_VERSION`, `CXVM_BIN_DIR` and `CXVM_RELEASES_URL` (for mirrors and tests) mirror its options. It is a release asset, so the script matches the release it installs. Tested with dash and bash against a local server, with busybox's wget, and in `ubuntu:24.04`.
 - 2026-10-12: Downloads honour `ALL_PROXY`/`HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY` (ureq's default, checked with a dead proxy). A TLS-intercepting proxy still fails (bundled roots, 2026-10-03); an archive put in `~/.cache/cxvm/downloads/` by hand is verified and used instead. Both are in the README FAQ.
+- 2026-10-12: `v0.1.0` was pushed while the repository was still private, so its release has no attestation (the step was skipped as designed, and a re-run keeps the original event). It was left so: re-releasing would rebuild an archive whose sha256 is already published. Releases after 0.1.0 are attested; the README says so.
 
 ---
 
