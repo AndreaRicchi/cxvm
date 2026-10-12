@@ -3,10 +3,12 @@
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
+use std::process::{Command, Output};
 
 use serde::de::DeserializeOwned;
 
 use crate::error::{Error, Result};
+use crate::output::{self, debug};
 
 /// `path` made absolute against `cwd`, with `.` and `..` resolved lexically. Symlinks are
 /// kept as given, unlike `canonicalize`.
@@ -39,6 +41,21 @@ pub(crate) fn retry_busy<T>(mut spawn: impl FnMut() -> io::Result<T>) -> io::Res
         }
     }
     spawn()
+}
+
+/// Runs `command` to the end with its output captured, retrying like [`retry_busy`]. With
+/// `-v`, says what ran and how it ended.
+pub(crate) fn run_captured(command: &mut Command) -> io::Result<Output> {
+    let result = retry_busy(|| command.output());
+    debug!(
+        "ran {}: {}",
+        output::command_line(command),
+        match &result {
+            Ok(output) => output.status.to_string(),
+            Err(err) => err.to_string(),
+        }
+    );
+    result
 }
 
 /// Whether `name` is one ordinary, visible path component: not empty, no `/`, no leading `.`.
@@ -112,5 +129,7 @@ pub(crate) fn write_atomic(path: &Path, contents: &str) -> Result<()> {
     if result.is_err() {
         let _ = fs::remove_file(&tmp);
     }
-    result.map_err(io_error("write", path))
+    result.map_err(io_error("write", path))?;
+    debug!("wrote {}", path.display());
+    Ok(())
 }

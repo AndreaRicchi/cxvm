@@ -102,7 +102,7 @@ pub fn version_line(driver: &Path) -> Option<String> {
 
 /// Stdout of `program arg`, if it ran and succeeded.
 fn capture(program: &Path, arg: &str) -> Option<String> {
-    let output = files::retry_busy(|| Command::new(program).arg(arg).output()).ok()?;
+    let output = files::run_captured(Command::new(program).arg(arg)).ok()?;
     output
         .status
         .success()

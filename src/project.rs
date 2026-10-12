@@ -10,6 +10,7 @@ use toml_edit::{DocumentMut, Item, Table, TableLike, Value};
 use crate::config::{self, Config};
 use crate::error::{Error, Result};
 use crate::files;
+use crate::output::debug;
 use crate::toolchain::{Kind, Spec};
 
 /// Name of the committed per-project pin file.
@@ -260,6 +261,7 @@ pub fn resolve(cwd: &Path, env_compiler: Option<&str>, config_path: &Path) -> Re
             Error::InvalidId { input, reason } => Error::InvalidEnvCompiler { input, reason },
             other => other,
         })?;
+        debug!("{ENV_VAR}={value} decides the toolchain");
         return Ok(Resolution {
             spec,
             source: Source::Env,
@@ -267,17 +269,21 @@ pub fn resolve(cwd: &Path, env_compiler: Option<&str>, config_path: &Path) -> Re
     }
     if let Some(rc) = find_rc(cwd) {
         let spec = ProjectRc::load(&rc)?.compiler;
+        debug!("{} pins {spec}", rc.display());
         return Ok(Resolution {
             spec,
             source: Source::ProjectRc(rc),
         });
     }
+    debug!("no {RC_FILE} in {} or its parents", cwd.display());
     if let Some(spec) = Config::load(config_path)?.compiler {
+        debug!("{} sets the global default {spec}", config_path.display());
         return Ok(Resolution {
             spec,
             source: Source::Global(config_path.to_owned()),
         });
     }
+    debug!("no global default in {}", config_path.display());
     Ok(Resolution {
         spec: Spec::System,
         source: Source::Default,

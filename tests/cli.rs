@@ -124,3 +124,35 @@ fn labels_are_coloured_only_when_asked_and_never_with_no_color() {
     let no_color = run(&[("CLICOLOR_FORCE", "1"), ("NO_COLOR", "1")]);
     assert_eq!(no_color, piped);
 }
+
+#[test]
+fn verbose_says_how_the_toolchain_was_found() {
+    let sandbox = Sandbox::new();
+    sandbox.install("gcc", "13.3.0");
+    let rc = sandbox.pin("", "gcc@13.3.0");
+    sandbox
+        .cxvm("a/b")
+        .arg("current")
+        .assert()
+        .success()
+        .stderr(predicate::str::is_empty());
+    sandbox
+        .cxvm("a/b")
+        .args(["-v", "current"])
+        .assert()
+        .success()
+        .stdout(predicate::str::starts_with("gcc@13.3.0 (set by"))
+        .stderr(predicate::str::contains(format!(
+            "debug: {} pins gcc@13.3.0",
+            rc.display()
+        )))
+        .stderr(predicate::str::contains("debug: store "));
+    sandbox
+        .cxvm("")
+        .args(["exec", "--verbose", "--", "true"])
+        .env("PATH", sandbox.path_with_host())
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("debug: running true with "))
+        .stderr(predicate::str::contains("CXVM_TOOLCHAIN=gcc@13.3.0"));
+}

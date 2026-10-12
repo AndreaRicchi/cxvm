@@ -23,7 +23,7 @@ use crate::catalog::{Catalog, Release};
 use crate::detect;
 use crate::error::{Error, Result};
 use crate::files;
-use crate::output;
+use crate::output::{self, debug};
 use crate::store::{self, Meta, Store};
 use crate::toolchain;
 
@@ -337,6 +337,14 @@ impl<'a> GnuSource<'a> {
             // Its own process group, so that the whole tree of makes and compilers can be
             // stopped at once, and a Ctrl-C in the terminal reaches only cxvm.
             .process_group(0);
+        debug!(
+            "running {} in {}",
+            output::command_line(&command),
+            command
+                .get_current_dir()
+                .unwrap_or(Path::new("."))
+                .display()
+        );
         let started = Instant::now();
         let mut child = files::retry_busy(|| command.spawn()).map_err(|e| Error::Build {
             id: id.to_string(),
@@ -560,14 +568,14 @@ fn builds_and_runs(
     let mut compile = base_command(compiler, path);
     compile.arg(&source).arg("-o").arg(&program);
     let output =
-        files::retry_busy(|| compile.output()).map_err(|e| format!("{name} cannot be run: {e}"))?;
+        files::run_captured(&mut compile).map_err(|e| format!("{name} cannot be run: {e}"))?;
     if !output.status.success() {
         return Err(format!(
             "{name} cannot build a program from {file}:\n{}",
             smoke::tail(&output.stderr)
         ));
     }
-    let run = files::retry_busy(|| base_command(&program, path).output());
+    let run = files::run_captured(&mut base_command(&program, path));
     match run {
         Ok(run) if run.status.success() && run.stdout.starts_with(b"cxvm-ok") => Ok(()),
         Ok(run) => Err(format!(

@@ -1,5 +1,5 @@
 //! Messages on stderr besides progress: `error:`, `warning:` and `note:`, whose `hint:` lines
-//! say what to do next.
+//! say what to do next, and with `-v` the `debug:` lines.
 //!
 //! Labels are coloured the way clap colours its own messages, through [`anstream`]: only on a
 //! terminal, never with `NO_COLOR`, always with `CLICOLOR_FORCE`, never with `CLICOLOR=0` or
@@ -7,6 +7,8 @@
 
 use std::fmt;
 use std::io::Write;
+use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anstyle::{AnsiColor, Style};
 
@@ -86,6 +88,48 @@ pub fn note(text: impl fmt::Display) {
     print(Label::Note, text);
 }
 
+static VERBOSE: AtomicBool = AtomicBool::new(false);
+
+/// Turns the `debug:` lines on, for `-v/--verbose`. Set once, before a command runs.
+pub fn set_verbose(on: bool) {
+    VERBOSE.store(on, Ordering::Relaxed);
+}
+
+pub fn is_verbose() -> bool {
+    VERBOSE.load(Ordering::Relaxed)
+}
+
+/// Prints `debug: <message>` on stderr with `-v/--verbose`; the arguments are not even
+/// formatted otherwise.
+macro_rules! debug {
+    ($($arg:tt)*) => {
+        if $crate::output::is_verbose() {
+            $crate::output::print($crate::output::Label::Debug, format_args!($($arg)*));
+        }
+    };
+}
+pub(crate) use debug;
+
+/// `command` as typed in a shell: the program and its arguments, quoted where needed.
+pub fn command_line(command: &Command) -> String {
+    std::iter::once(command.get_program())
+        .chain(command.get_args())
+        .map(|word| {
+            let word = word.to_string_lossy();
+            let plain = !word.is_empty()
+                && word
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "-_./=:,+@%".contains(c));
+            if plain {
+                word.into_owned()
+            } else {
+                format!("'{}'", word.replace('\'', r"'\''"))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -119,6 +163,16 @@ mod tests {
         assert_eq!(
             plain(&rendered),
             "warning: hint: is part of the message\nsee hint: here"
+        );
+    }
+
+    #[test]
+    fn command_lines_quote_what_a_shell_would_split() {
+        let mut command = Command::new("/s/gcc/bin/g++");
+        command.args(["-print-file-name=libstdc++.so.6", "a b", "it's", ""]);
+        assert_eq!(
+            command_line(&command),
+            r"/s/gcc/bin/g++ -print-file-name=libstdc++.so.6 'a b' 'it'\''s' ''"
         );
     }
 }

@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 
 use crate::catalog::Download;
 use crate::error::{Error, Result};
-use crate::output;
+use crate::output::{self, debug};
 
 /// Returns the verified file `release` describes, in `dir`, downloading what is missing.
 ///
@@ -36,6 +36,7 @@ pub fn fetch(release: Download<'_>, dir: &Path) -> Result<PathBuf> {
         eprintln!("Checking the cached {}", archive.display());
         let (hasher, len) = hash_file(&archive).map_err(io_error("read", &archive))?;
         if len == release.size && hex(hasher) == release.sha256 {
+            debug!("the cached archive matches the catalog's sha256");
             return Ok(archive);
         }
         output::warning("the cached archive does not match the catalog; downloading it again");
@@ -61,6 +62,12 @@ pub fn fetch(release: Download<'_>, dir: &Path) -> Result<PathBuf> {
                    the download resumes where it stopped"
                 .into(),
         };
+        debug!(
+            "fetching {} into {}, from byte {len} of {}",
+            release.url,
+            part.display(),
+            release.size
+        );
         let mut request = agent().get(release.url);
         if len > 0 {
             request = request.header("Range", format!("bytes={len}-"));

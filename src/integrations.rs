@@ -10,7 +10,7 @@ use std::fmt::Write as _;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 use crate::detect;
 use crate::error::{Error, Result};
@@ -412,14 +412,12 @@ pub enum Gitignore {
 /// repository, else looks at `<root>/.gitignore`; appends `.cxvm/` there if needed.
 pub fn ensure_gitignored(root: &Path) -> Result<Gitignore> {
     let entry = format!("{PROJECT_DIR}/");
-    let git_says_ignored = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["check-ignore", "-q", &entry])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success());
+    let git_says_ignored = files::run_captured(Command::new("git").arg("-C").arg(root).args([
+        "check-ignore",
+        "-q",
+        &entry,
+    ]))
+    .is_ok_and(|output| output.status.success());
     if git_says_ignored {
         return Ok(Gitignore::AlreadyIgnored);
     }

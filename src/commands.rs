@@ -15,7 +15,7 @@ use crate::detect;
 use crate::error::{Error, Result};
 use crate::files;
 use crate::integrations::{self, Activation, FileEdit, Gitignore, Shell, presets, vscode};
-use crate::output;
+use crate::output::{self, debug};
 use crate::paths::Paths;
 use crate::project::{self, ProjectRc, Resolution, Source};
 use crate::store::{Installed, Link, Store};
@@ -60,6 +60,11 @@ impl Context {
         let catalog = std::env::var_os(catalog::ENV_VAR)
             .filter(|value| !value.is_empty())
             .map(|value| files::absolute(&cwd, Path::new(&value)));
+        debug!(
+            "store {}, cache {}",
+            paths.data_dir().display(),
+            paths.cache_dir().display()
+        );
         Ok(Self {
             paths,
             cwd,
@@ -73,7 +78,9 @@ impl Context {
 
     /// The installable releases: `CXVM_CATALOG`, or the catalog built into cxvm.
     pub fn catalog(&self) -> Result<Catalog> {
-        Catalog::load(self.catalog.as_deref())
+        let catalog = Catalog::load(self.catalog.as_deref())?;
+        debug!("releases from {}", catalog.origin());
+        Ok(catalog)
     }
 
     pub fn store(&self) -> Store {
@@ -1483,6 +1490,19 @@ pub fn exec(ctx: &Context, cmd: &[String]) -> Result<()> {
     for (name, value) in activation.compiler_env() {
         command.env(name, value);
     }
+    debug!(
+        "running {} with {}",
+        output::command_line(&command),
+        command
+            .get_envs()
+            .filter_map(|(name, value)| Some(format!(
+                "{}={}",
+                name.to_string_lossy(),
+                value?.to_string_lossy()
+            )))
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
     let err = files::retry_busy(|| Err::<(), _>(command.exec())).unwrap_err();
     Err(Error::Usage {
         message: format!("cannot run `{program}`: {err}"),

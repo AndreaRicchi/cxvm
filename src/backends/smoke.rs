@@ -11,7 +11,7 @@ use crate::files;
 /// `ldd` is missing or `binary` is not dynamically linked: the version probe catches a binary
 /// that cannot run at all.
 pub fn missing_libraries(binary: &Path) -> Vec<String> {
-    let Ok(output) = files::retry_busy(|| Command::new("ldd").arg(binary).output()) else {
+    let Ok(output) = files::run_captured(Command::new("ldd").arg(binary)) else {
         return Vec::new();
     };
     parse_ldd(&String::from_utf8_lossy(&output.stdout))
@@ -114,7 +114,7 @@ pub fn compile_and_run(cxx: &Path, scratch: &Path, rpath: Option<&Path>) -> Opti
 }
 
 fn run(command: &mut Command) -> std::io::Result<Output> {
-    files::retry_busy(|| command.output())
+    files::run_captured(command)
 }
 
 /// The last lines of `stderr`, indented.

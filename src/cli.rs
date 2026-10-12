@@ -13,6 +13,7 @@ use crate::backends::source;
 use crate::commands::{self, Context};
 use crate::error::{Error, Result};
 use crate::integrations;
+use crate::output;
 
 /// Per-project C/C++ compiler versions for x86_64 Linux.
 #[derive(Debug, Parser)]
@@ -149,6 +150,7 @@ pub enum EnvShell {
 
 /// Run the parsed command line.
 pub fn run(cli: Cli) -> Result<()> {
+    output::set_verbose(cli.verbose);
     let (command, milestone) = match cli.command {
         Command::Completions { shell } => {
             clap_complete::generate(shell, &mut Cli::command(), "cxvm", &mut io::stdout());

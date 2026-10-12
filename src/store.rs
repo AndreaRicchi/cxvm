@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::detect;
 use crate::error::{Error, Result};
 use crate::files;
-use crate::output;
+use crate::output::{self, debug};
 use crate::paths::Paths;
 use crate::toolchain::{Kind, Spec, ToolchainId, Version};
 
@@ -209,6 +209,7 @@ impl Store {
             }
             Err(fs::TryLockError::Error(source)) => return Err(io_error("lock", &path)(source)),
         }
+        debug!("holding the store lock {}", path.display());
         let lock = StoreLock { _file: file };
         self.clean_staging(&lock)?;
         Ok(lock)

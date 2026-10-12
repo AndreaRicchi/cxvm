@@ -12,6 +12,7 @@ use std::str::FromStr;
 
 use crate::error::{Error, Result};
 use crate::files;
+use crate::output::debug;
 
 /// Compiler family.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -295,10 +296,15 @@ pub fn unmanaged_path(path_var: Option<&OsStr>, store: &Path) -> Vec<PathBuf> {
 /// The `system` compiler: the first executable `name` (`cc`, `c++`) on `path_var`, skipping
 /// entries that cxvm manages (see [`unmanaged_path`]).
 pub fn find_system(name: &str, path_var: Option<&OsStr>, store: &Path) -> Option<PathBuf> {
-    unmanaged_path(path_var, store)
+    let found = unmanaged_path(path_var, store)
         .into_iter()
         .map(|dir| dir.join(name))
-        .find(|candidate| files::is_executable(candidate))
+        .find(|candidate| files::is_executable(candidate));
+    match &found {
+        Some(path) => debug!("the system `{name}` is {}", path.display()),
+        None => debug!("no `{name}` on PATH outside cxvm's directories"),
+    }
+    found
 }
 
 impl From<ToolchainId> for Spec {
