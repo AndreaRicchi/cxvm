@@ -2,7 +2,10 @@ name: CI
 
 on:
   push:
+    # Tags run this workflow through release.yml.
+    branches: ['**']
   pull_request:
+  workflow_call:
 
 env:
   CARGO_TERM_COLOR: always
@@ -22,6 +25,16 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
 
+  msrv:
+    name: build with Rust 1.89
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.89
+      - uses: Swatinem/rust-cache@v2
+      # `+1.89`, as rust-toolchain.toml would otherwise select stable.
+      - run: cargo +1.89 check --locked --workspace --all-targets
+
   release-musl:
     name: static musl build
     runs-on: ubuntu-latest
@@ -29,13 +42,12 @@ jobs:
       TARGET: x86_64-unknown-linux-musl
     steps:
       - uses: actions/checkout@v7
-      # Needed once C dependencies (rustls/ring, liblzma) arrive; harmless now.
       - run: sudo apt-get update && sudo apt-get install -y musl-tools
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-unknown-linux-musl
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release --target "$TARGET"
+      - run: cargo build --release --locked --target "$TARGET"
       - name: Check the binary is static and runs
         run: |
           bin="target/$TARGET/release/cxvm"
@@ -43,8 +55,21 @@ jobs:
           file "$bin" | grep -q 'static' || { echo "::error::cxvm is not statically linked"; exit 1; }
           "$bin" --version
           "$bin" --help
+      # The archive name has no version, so that install.sh can always fetch
+      # releases/latest/download/cxvm-x86_64-unknown-linux-musl.tar.gz.
+      - name: Package the binary
+        run: |
+          name="cxvm-$TARGET"
+          mkdir -p "dist/$name"
+          cp "target/$TARGET/release/cxvm" LICENSE-APACHE LICENSE-MIT README.md CHANGELOG.md "dist/$name/"
+          tar -C dist --sort=name --owner=0 --group=0 --numeric-owner --mode=go-w \
+            --mtime="@$(git log -1 --format=%ct)" -cf - "$name" | gzip -9n > "dist/$name.tar.gz"
+          (cd dist && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
+          cat "dist/$name.tar.gz.sha256"
       - uses: actions/upload-artifact@v7
         with:
           name: cxvm-x86_64-unknown-linux-musl
-          path: target/x86_64-unknown-linux-musl/release/cxvm
+          path: |
+            dist/cxvm-x86_64-unknown-linux-musl.tar.gz
+            dist/cxvm-x86_64-unknown-linux-musl.tar.gz.sha256
           if-no-files-found: error
