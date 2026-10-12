@@ -97,3 +97,30 @@ fn completions_print_a_script() {
             .stdout(predicate::str::contains("doctor"));
     }
 }
+
+#[test]
+fn labels_are_coloured_only_when_asked_and_never_with_no_color() {
+    let sandbox = Sandbox::new();
+    let run = |vars: &[(&str, &str)]| {
+        let mut cmd = sandbox.cxvm("");
+        cmd.args(["use", "gcc13"]);
+        for (name, value) in vars {
+            cmd.env(name, value);
+        }
+        let output = cmd.assert().code(1).get_output().clone();
+        String::from_utf8(output.stderr).unwrap()
+    };
+    let escape = "\u{1b}[";
+
+    let piped = run(&[]);
+    assert!(piped.starts_with("error: invalid toolchain id"), "{piped}");
+    assert!(piped.contains("\n  hint: "), "{piped}");
+    assert!(!piped.contains(escape), "{piped:?}");
+
+    let forced = run(&[("CLICOLOR_FORCE", "1")]);
+    assert!(forced.contains(escape), "{forced:?}");
+    assert_eq!(anstream::adapter::strip_str(&forced).to_string(), piped);
+
+    let no_color = run(&[("CLICOLOR_FORCE", "1"), ("NO_COLOR", "1")]);
+    assert_eq!(no_color, piped);
+}

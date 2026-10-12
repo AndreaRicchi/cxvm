@@ -23,6 +23,7 @@ use crate::catalog::{Catalog, Release};
 use crate::detect;
 use crate::error::{Error, Result};
 use crate::files;
+use crate::output;
 use crate::store::{self, Meta, Store};
 use crate::toolchain;
 
@@ -283,11 +284,11 @@ impl<'a> GnuSource<'a> {
         for (library, asset) in wanted {
             let Some(prerequisite) = self.catalog.prerequisite(&asset) else {
                 if library == "isl" {
-                    eprintln!(
-                        "note: building without ISL (no Graphite loop optimizations): {asset} \
-                         is not in {}",
+                    output::note(format!(
+                        "building without ISL (no Graphite loop optimizations): {asset} is not \
+                         in {}",
                         self.catalog.origin()
-                    );
+                    ));
                     continue;
                 }
                 return Err(fail(

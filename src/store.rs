@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::detect;
 use crate::error::{Error, Result};
 use crate::files;
+use crate::output;
 use crate::paths::Paths;
 use crate::toolchain::{Kind, Spec, ToolchainId, Version};
 
@@ -218,10 +219,10 @@ impl Store {
         let staging = self.paths.staging_dir();
         for entry in read_dir(&staging)? {
             let path = entry.path();
-            eprintln!(
-                "note: deleting {}, left by an interrupted install or removal",
+            output::note(format!(
+                "deleting {}, left by an interrupted install or removal",
                 path.display()
-            );
+            ));
             remove_all(&path)?;
         }
         Ok(())

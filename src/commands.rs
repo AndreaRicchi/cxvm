@@ -15,6 +15,7 @@ use crate::detect;
 use crate::error::{Error, Result};
 use crate::files;
 use crate::integrations::{self, Activation, FileEdit, Gitignore, Shell, presets, vscode};
+use crate::output;
 use crate::paths::Paths;
 use crate::project::{self, ProjectRc, Resolution, Source};
 use crate::store::{Installed, Link, Store};
@@ -673,7 +674,7 @@ impl ProjectPlan {
             }
         }
         for note in &self.notes {
-            eprintln!("note: {note}");
+            output::note(note);
         }
         if self.gitignore
             && let Gitignore::Added(path) = integrations::ensure_gitignored(root)?
@@ -770,10 +771,10 @@ pub fn use_(ctx: &Context, id: &str, gcc: Option<&str>) -> Result<()> {
         }
     }
     if let Some(value) = ctx.env_compiler.as_deref().filter(|v| !v.is_empty()) {
-        eprintln!(
-            "note: {}={value} overrides this pin in this shell",
+        output::note(format!(
+            "{}={value} overrides this pin in this shell",
             project::ENV_VAR
-        );
+        ));
     }
     Ok(())
 }
@@ -1099,11 +1100,11 @@ fn install_release(
                  docs/backends.md"
             }
         };
-        eprintln!(
-            "warning: {} is installed, but cannot build and run a C++ program here: {problem}\n  \
+        output::warning(format!(
+            "{} is installed, but cannot build and run a C++ program here: {problem}\n  \
              hint: {hint}",
             toolchain.id
-        );
+        ));
     }
     println!("Installed {} in {}", toolchain.id, toolchain.path.display());
     match log {
@@ -1185,16 +1186,18 @@ pub fn remove(ctx: &Context, id: &str, force: bool) -> Result<()> {
     drop(lock);
     println!("Removed {id} from {}", toolchain.path.display());
     if global.is_some() {
-        eprintln!("warning: {id} was the global default; set another with `cxvm global <id>`");
+        output::warning(format!(
+            "{id} was the global default; set another with `cxvm global <id>`"
+        ));
     }
     if let Ok(Resolution { spec, source }) = ctx.resolve()
         && !matches!(source, Source::Global(_))
         && loses(&spec)
     {
-        eprintln!(
-            "warning: {id} is still pinned here ({source}); reinstall it with `cxvm install`, \
-             or pin another with `cxvm use <id>`"
-        );
+        output::warning(format!(
+            "{id} is still pinned here ({source}); reinstall it with `cxvm install`, or pin \
+             another with `cxvm use <id>`"
+        ));
     }
     Ok(())
 }
@@ -1347,7 +1350,9 @@ fn probe_as(prefix: &Path, id: &ToolchainId) -> Result<Option<detect::Detected>>
             Ok(Some(detected))
         }
         Err(err) => {
-            eprintln!("warning: taking the version from `--as {id}` on trust: {err}");
+            output::warning(format!(
+                "taking the version from `--as {id}` on trust: {err}"
+            ));
             Ok(None)
         }
     }
@@ -1381,18 +1386,18 @@ pub fn unlink(ctx: &Context, id: &str) -> Result<()> {
         .as_ref()
         .is_some_and(selects)
     {
-        eprintln!(
-            "warning: {id} was the global default in {}; set another with `cxvm global <id>`",
+        output::warning(format!(
+            "{id} was the global default in {}; set another with `cxvm global <id>`",
             config_file.display()
-        );
+        ));
     }
     if let Ok(Resolution { spec, source }) = ctx.resolve()
         && selects(&spec)
         && !matches!(source, Source::Global(_))
     {
-        eprintln!(
-            "warning: {id} is still pinned here ({source}); pin another with `cxvm use <id>`"
-        );
+        output::warning(format!(
+            "{id} is still pinned here ({source}); pin another with `cxvm use <id>`"
+        ));
     }
     println!(
         "Unlinked {id}; the files in {} are left alone",
@@ -1422,7 +1427,9 @@ pub fn global(ctx: &Context, id: &str) -> Result<()> {
     if let Ok(Resolution { source, .. }) = ctx.resolve()
         && matches!(source, Source::Env | Source::ProjectRc(_))
     {
-        eprintln!("note: here the toolchain is {source}, which overrides the global default");
+        output::note(format!(
+            "here the toolchain is {source}, which overrides the global default"
+        ));
     }
     Ok(())
 }

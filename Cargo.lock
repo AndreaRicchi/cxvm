@@ -293,6 +293,8 @@ dependencies = [
 name = "cxvm"
 version = "0.1.0-dev"
 dependencies = [
+ "anstream",
+ "anstyle",
  "assert_cmd",
  "bzip2",
  "clap",

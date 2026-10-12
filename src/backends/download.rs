@@ -11,6 +11,7 @@ use sha2::{Digest, Sha256};
 
 use crate::catalog::Download;
 use crate::error::{Error, Result};
+use crate::output;
 
 /// Returns the verified file `release` describes, in `dir`, downloading what is missing.
 ///
@@ -37,7 +38,7 @@ pub fn fetch(release: Download<'_>, dir: &Path) -> Result<PathBuf> {
         if len == release.size && hex(hasher) == release.sha256 {
             return Ok(archive);
         }
-        eprintln!("warning: the cached archive does not match the catalog; downloading it again");
+        output::warning("the cached archive does not match the catalog; downloading it again");
         fs::remove_file(&archive).map_err(io_error("delete", &archive))?;
     }
 

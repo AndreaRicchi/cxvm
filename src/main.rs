@@ -7,7 +7,7 @@ fn main() -> ExitCode {
     match cxvm::cli::run(cli) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
-            eprintln!("error: {err}");
+            cxvm::output::error(&err);
             ExitCode::from(err.exit_code())
         }
     }
