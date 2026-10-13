@@ -5,12 +5,14 @@
 ![MSRV](https://img.shields.io/crates/msrv/cxvm)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
 
-Per-project C/C++ compiler versions for x86_64 Linux. What [FVM](https://fvm.app) is to
-Flutter, `cxvm` is to native GCC and Clang: a shared store of installed toolchains in your home
-directory, a committed `.cxvmrc` that pins an exact version per project, and a gitignored
-`.cxvm/` folder with a `current` symlink and generated CMake / editor integration files. No
-root, no wrapping of compiler calls: generated files point at real paths, so builds keep working
-even when `cxvm` is not on `PATH`.
+Per-project C/C++ compiler versions for x86_64 Linux. What [FVM](https://fvm.app) does for
+Flutter, cxvm does for GCC and Clang.
+
+The toolchains you install live in one store in your home directory. Each project pins an exact
+version in a `.cxvmrc` that you commit, and gets a gitignored `.cxvm/` folder with a `current`
+symlink and the files CMake and your editor need. cxvm doesn't need root and doesn't wrap your
+compiler: the generated files point at real paths, so builds keep working even when `cxvm` isn't
+on `PATH`.
 
 ```sh
 cxvm install gcc@13      # GCC 13.4.0, into ~/.local/share/cxvm
@@ -19,22 +21,18 @@ cxvm use gcc@13          # pins gcc@13.4.0 in .cxvmrc, generates .cxvm/
 cmake -S . -B build/gcc-13.4.0 -DCMAKE_TOOLCHAIN_FILE=.cxvm/toolchain.cmake
 ```
 
-**Status: 0.1.0, the first release.** It installs official LLVM builds of Clang, xPack builds
-of GCC, and builds GCC releases from source. See [CHANGELOG.md](CHANGELOG.md) for what it
-does and its known limitations.
-
 ## Why
 
 Different projects need different native compilers: a host GCC with the same major version as
 an older cross toolchain, a GCC that a customer's code still builds with, a newer Clang to try
-something out. A distribution ships one or a few versions, installing others by hand is
-tedious, and switching the global `gcc` with `update-alternatives` changes it for every
-project at once. cxvm keeps any number of versions side by side and lets each project say
-which one it uses.
+something out. Your distribution ships one or two of them. Installing the others by hand is
+tedious, and switching the global `gcc` with `update-alternatives` changes it for every project
+at once. cxvm keeps as many versions as you like side by side, and each project says which one
+it uses.
 
 ## Install
 
-With Rust 1.89 or newer and a C compiler (two dependencies build C code):
+You need Rust 1.89 or newer, plus a C compiler for the two dependencies that build C code:
 
 ```sh
 cargo install cxvm --locked
@@ -48,13 +46,15 @@ Without Rust, download the static binary from the
 
 ```sh
 sha256sum -c cxvm-x86_64-unknown-linux-musl.tar.gz.sha256
-gh attestation verify cxvm-x86_64-unknown-linux-musl.tar.gz --repo AndreaRicchi/cxvm   # optional, after 0.1.0
 tar -xzf cxvm-x86_64-unknown-linux-musl.tar.gz
 cp cxvm-x86_64-unknown-linux-musl/cxvm ~/.local/bin/
 ```
 
-Shell completions: `cxvm completions bash|zsh|fish`, see
-[docs/integrations.md](docs/integrations.md#shell-completions).
+Releases after 0.1.0 also come with a build attestation, which you can check with
+`gh attestation verify cxvm-x86_64-unknown-linux-musl.tar.gz --repo AndreaRicchi/cxvm`.
+
+For shell completions, run `cxvm completions bash|zsh|fish`;
+[docs/integrations.md](docs/integrations.md#shell-completions) says where to put the output.
 
 ## Quickstart
 
@@ -69,8 +69,8 @@ cmake -S . -B build/gcc-13.4.0 -DCMAKE_TOOLCHAIN_FILE=.cxvm/toolchain.cmake
 cmake --build build/gcc-13.4.0
 ```
 
-Commit `.cxvmrc`. Whoever clones the project runs `cxvm install` with no arguments to get the
-pinned toolchain and their own `.cxvm/`.
+Commit `.cxvmrc`. Anyone who clones the project then runs `cxvm install`, with no arguments, to
+get the pinned toolchain and their own `.cxvm/`.
 
 Outside CMake:
 
@@ -79,14 +79,16 @@ cxvm exec -- make                    # PATH, CC and CXX set for one command
 eval "$(cxvm env)"                   # the same for the current shell (fish: cxvm env | source)
 ```
 
-Clang, using the libstdc++ of a GCC that cxvm knows instead of whichever GCC the host has:
+To build with Clang against the libstdc++ of a GCC that cxvm installed, rather than whichever
+GCC the host has:
 
 ```sh
 cxvm install clang@19
 cxvm use clang@19 --gcc gcc@13
 ```
 
-A compiler you already have, and a default for directories without a `.cxvmrc`:
+To use a compiler you already have, and make it the default in directories without a
+`.cxvmrc`:
 
 ```sh
 cxvm link /opt/gcc-11                # registered as gcc@11.4.0-local, for example
@@ -94,7 +96,7 @@ cxvm global gcc@11.4.0-local
 ```
 
 `cxvm doctor` checks the store, the project's generated files and its CMake build
-directories. CMake presets, VS Code / clangd settings and direnv are described in
+directories. For CMake presets, VS Code and clangd settings, and direnv, see
 [docs/integrations.md](docs/integrations.md).
 
 ## How it works
@@ -115,15 +117,15 @@ directories. CMake presets, VS Code / clangd settings and direnv are described i
   `LD_LIBRARY_PATH`.
 - **Verified, atomic installs.** Every archive is checked against a sha256 built into cxvm,
   unpacked into a staging directory and moved into the store only once it is complete and has
-  passed a smoke test. Where the archives come from, and how their checksums were obtained, is
-  in [docs/backends.md](docs/backends.md).
+  passed a smoke test. [docs/backends.md](docs/backends.md) explains where the archives come
+  from and how their checksums were obtained.
 
 ## Commands
 
 | Command | Purpose |
 |---|---|
 | `cxvm install [<id>] [--from-source]` | Install a toolchain. With no id: install what `.cxvmrc` needs and regenerate `.cxvm/`. With `--from-source`: build GCC, optionally with `--bootstrap`, `--host-compiler <id>`, `-j <n>`, `--configure-arg <arg>` |
-| `cxvm remove <id> [--force]` | Remove from the store (refuse if it's the global default, or the current directory's pin or `[clang] gcc`, unless `--force`) |
+| `cxvm remove <id> [--force]` | Remove from the store. Without `--force`, it refuses the global default and anything the current project's `.cxvmrc` uses, including its `[clang] gcc` |
 | `cxvm prune [--dry-run]` | Delete the download cache and the logs of builds from source |
 | `cxvm list [--available] [--json]` | Installed toolchains (marking active/global), or installable versions |
 | `cxvm use <id> [--gcc <id>]` | Pin in the current project: write `.cxvmrc`, (re)generate `.cxvm/` and the opted-in integrations. With `--gcc`: pair the clang with that GCC's libstdc++ |
@@ -167,7 +169,7 @@ file changes or is passed again. Use one build directory per toolchain, as `cxvm
 **A program fails with `` version `GLIBCXX_3.4.32' not found ``.**
 It was built with a GCC newer than the host's libstdc++ and without an rpath. The CMake
 toolchain file adds one; elsewhere, link with `-Wl,-rpath,<store>/toolchains/gcc/<version>/lib64`.
-`cxvm exec` and `cxvm env` deliberately do not set `LD_LIBRARY_PATH`.
+`cxvm exec` and `cxvm env` deliberately don't set `LD_LIBRARY_PATH`.
 
 **An older Clang fails inside the standard library headers.**
 Clang uses the newest GCC installation on the host, and an old Clang may not compile a much
@@ -176,10 +178,10 @@ newer libstdc++. Pair it with an older GCC: `cxvm use clang@17 --gcc gcc@13`.
 **Installing Clang 13.0.1 or 18.1.8 fails: `libtinfo.so.5` not found.**
 Those LLVM builds need ncurses 5, which Ubuntu 24.04 and later no longer ship. Install
 `libtinfo5` (older Debian/Ubuntu) or `ncurses-compat-libs` (Fedora/RHEL), or use another
-version: Clang 19 and later do not need it.
+version: Clang 19 and later don't need it.
 
 **The xPack GCC 8.5.0 or 11.2.0 hello-world fails, mentioning `.relr.dyn`.**
-These builds bundle a linker older than binutils 2.38, which cannot read the C library of
+These builds bundle a linker older than binutils 2.38, which can't read the C library of
 recent distributions. Pass `-B/usr/bin` to use the host's linker, or install a newer release of
 the same major.
 
@@ -187,7 +189,7 @@ the same major.
 Releases older than the host's C library often do. Run the same command with
 `--configure-arg=--disable-libsanitizer`; the compiler then works, without `-fsanitize=`.
 
-**A compiler release I need is not listed.**
+**A compiler release I need isn't listed.**
 The list of releases and their checksums is built into cxvm, so a new compiler release arrives
 with a new cxvm release. Until then, `cxvm link` a toolchain you unpacked yourself, or point
 `CXVM_CATALOG` at a catalog file generated with `cargo xtask catalog`.
@@ -202,7 +204,7 @@ its file name; `cxvm install` checks its sha256 and uses it.
 No. It writes only to its store, its cache, the current project and temporary directories.
 
 **What breaks if I uninstall cxvm?**
-Nothing that is already configured: generated files name the compilers in the store. To remove
+Nothing that's already configured: generated files name the compilers in the store. To remove
 everything, remove the `cxvm` binary (`cargo uninstall cxvm`), and delete `~/.local/share/cxvm`
 (or `$CXVM_HOME`), `~/.cache/cxvm` and the `.cxvm/` directories of your projects.
 
@@ -212,10 +214,8 @@ everything, remove the `cxvm` binary (`cargo uninstall cxvm`), and delete `~/.lo
   libstdc++, `cxvm doctor`, the shell and direnv, VS Code and clangd.
 - [docs/backends.md](docs/backends.md): where toolchains come from, how they are verified, and
   what was found on real hosts.
-- [CHANGELOG.md](CHANGELOG.md).
+- [CHANGELOG.md](CHANGELOG.md): what changed in each release, and the known limitations.
 - [CONTRIBUTING.md](CONTRIBUTING.md): how to build, test and change cxvm.
-- [PLAN.md at v0.1.0](https://github.com/AndreaRicchi/cxvm/blob/v0.1.0/PLAN.md): the plan and
-  decisions log that 0.1.0 was built from.
 
 ## Building from source
 
